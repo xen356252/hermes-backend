@@ -23,3 +23,11 @@ spring:
 springdoc:
   swagger-ui:
     path: /swagger-ui.html
+
+# ==========================================
+# SMS.ir Sandbox Configuration
+# ==========================================
+sms:
+  ir:
+    api-key: "sxyroI9E6KAdoAKZbT74dbegiJffEDeNUELzyGS424sqIWjt"
+    template-id: 100000

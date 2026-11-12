@@ -20,13 +20,13 @@ interface CategoryRepository : JpaRepository<Category, Long> {
 
 interface BoothRepository : JpaRepository<Booth, Long> {
     fun findBySellerId(sellerId: Long): List<Booth>
+    fun findByType(type: BoothType): List<Booth>
 }
 
 interface ProductRepository : JpaRepository<Product, Long> {
     fun findByIsHotDealTrue(): List<Product>
     fun findByCategoryId(categoryId: Long): List<Product>
     fun findByBoothId(boothId: Long): List<Product>
-    fun findByTitleContainingIgnoreCase(query: String): List<Product>
 }
 
 interface BannerRepository : JpaRepository<Banner, Long> {
@@ -38,11 +38,15 @@ interface CartItemRepository : JpaRepository<CartItem, Long> {
     fun findByUserIdAndProductId(userId: Long, productId: Long): CartItem?
     @Transactional
     fun deleteByUserId(userId: Long)
+    @Transactional
+    fun deleteByProductId(productId: Long)
 }
 
 interface WishlistItemRepository : JpaRepository<WishlistItem, Long> {
     fun findByUserId(userId: Long): List<WishlistItem>
     fun findByUserIdAndProductId(userId: Long, productId: Long): WishlistItem?
+    @Transactional
+    fun deleteByProductId(productId: Long)
 }
 
 interface OrderRepository : JpaRepository<Order, Long> {
@@ -51,4 +55,6 @@ interface OrderRepository : JpaRepository<Order, Long> {
 
 interface OrderItemRepository : JpaRepository<OrderItem, Long> {
     fun findByOrderId(orderId: Long): List<OrderItem>
+    @Transactional
+    fun deleteByProductId(productId: Long)
 }
