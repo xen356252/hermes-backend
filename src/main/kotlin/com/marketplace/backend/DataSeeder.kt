@@ -31,6 +31,10 @@ class DataSeeder(
             "ALTER TABLE products ADD COLUMN IF NOT EXISTS warehouse_origin VARCHAR(20) DEFAULT 'IRAN' NOT NULL",
             "ALTER TABLE products ADD COLUMN IF NOT EXISTS china_price NUMERIC(18,0)",
             "ALTER TABLE products ADD COLUMN IF NOT EXISTS delivery_time_range VARCHAR(120) DEFAULT 'آماده ارسال از انبار ایران (۱ تا ۳ روز کاری)' NOT NULL",
+            "ALTER TABLE products ADD COLUMN IF NOT EXISTS iran_stock_quantity INTEGER DEFAULT 10 NOT NULL",
+            "ALTER TABLE products ADD COLUMN IF NOT EXISTS china_stock_quantity INTEGER DEFAULT 0 NOT NULL",
+            "ALTER TABLE cart_items ADD COLUMN IF NOT EXISTS selected_warehouse VARCHAR(20) DEFAULT 'IRAN' NOT NULL",
+            "ALTER TABLE order_items ADD COLUMN IF NOT EXISTS selected_warehouse VARCHAR(20) DEFAULT 'IRAN' NOT NULL",
             "ALTER TABLE banners ALTER COLUMN image_url TYPE TEXT",
             "ALTER TABLE banners ALTER COLUMN title TYPE TEXT",
             "ALTER TABLE banners ALTER COLUMN target_url TYPE TEXT",
@@ -68,7 +72,6 @@ class DataSeeder(
             userRepository.save(existingAdmin)
         }
 
-        // Seed hierarchical categories using a single map structure (DRY)
         val categoryHierarchy = mapOf(
             "موبایل" to listOf(
                 "گوشی‌های اپل",

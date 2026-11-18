@@ -26,9 +26,6 @@ import java.security.SecureRandom
 import java.util.*
 import java.util.concurrent.ConcurrentHashMap
 
-/**
- * Centralized, DRY input validator used across all controllers.
- */
 object InputValidator {
     private val IRAN_PHONE_REGEX = Regex("^09\\d{9}$")
     private val HUMAN_NAME_REGEX = Regex("^[\\u0600-\\u06FFa-zA-Z\\s\\u200C]{2,80}$")
@@ -267,7 +264,7 @@ class AuthController(
 
     private val secureRandom = SecureRandom()
     private val otpStore = ConcurrentHashMap<String, HashedOtpRecord>()
-    private val otpTtlMillis = 180_000L // 3 minutes
+    private val otpTtlMillis = 180_000L
     private val maxOtpAttempts = 5
 
     private fun encodeSecret(raw: String): String =
@@ -331,7 +328,6 @@ class AuthController(
             throw ResponseStatusException(HttpStatus.CONFLICT, "این شماره موبایل قبلاً ثبت شده است. لطفاً وارد شوید.")
         }
 
-        // Consume active OTP if the user registered via SMS code
         verifyAndConsumeOtp(cleanPhone, cleanCredential)
 
         val effectiveRole = if (cleanPhone == "09120000000") UserRole.ADMIN else req.role

@@ -165,12 +165,15 @@ class Product(
     @Column(columnDefinition = "TEXT")
     var description: String? = null,
 
+    // Base / Iran Warehouse Price
     @Column(nullable = false, precision = 18, scale = 0)
     var price: BigDecimal,
 
+    // Optional Discounted Price for Iran Warehouse
     @Column(precision = 18, scale = 0)
     var discountPrice: BigDecimal? = null,
 
+    // Optional Lower Price for China Warehouse (50-90 working days)
     @Column(precision = 18, scale = 0)
     var chinaPrice: BigDecimal? = null,
 
@@ -188,6 +191,14 @@ class Product(
     @Column(nullable = false, length = 120)
     var deliveryTimeRange: String = resolveDeliveryLabel(WarehouseOrigin.IRAN),
 
+    // Separate inventory for Iran Warehouse vs. China Warehouse (ChayaMarket model)
+    @Column(nullable = false)
+    var iranStockQuantity: Int = 10,
+
+    @Column(nullable = false)
+    var chinaStockQuantity: Int = 0,
+
+    // Total combined stock (kept synchronized for backward compatibility)
     @Column(nullable = false)
     var stockQuantity: Int = 10,
 
@@ -203,20 +214,45 @@ class Product(
 
     val createdAt: LocalDateTime = LocalDateTime.now()
 ) {
-    fun effectiveBasePrice(): BigDecimal = when {
-        warehouseOrigin == WarehouseOrigin.CHINA && chinaPrice != null && chinaPrice!! > BigDecimal.ZERO -> chinaPrice!!
-        discountPrice != null && discountPrice!! > BigDecimal.ZERO -> discountPrice!!
-        else -> price
+    fun syncTotalStock() {
+        stockQuantity = (iranStockQuantity.coerceAtLeast(0) + chinaStockQuantity.coerceAtLeast(0))
     }
 
-    fun resolveUnitPrice(quantity: Int): BigDecimal {
+    fun availableStockFor(warehouse: WarehouseOrigin): Int = when (warehouse) {
+        WarehouseOrigin.IRAN -> iranStockQuantity
+        WarehouseOrigin.CHINA -> chinaStockQuantity
+    }
+
+    fun deductStock(warehouse: WarehouseOrigin, quantity: Int) {
+        when (warehouse) {
+            WarehouseOrigin.IRAN -> iranStockQuantity = (iranStockQuantity - quantity).coerceAtLeast(0)
+            WarehouseOrigin.CHINA -> chinaStockQuantity = (chinaStockQuantity - quantity).coerceAtLeast(0)
+        }
+        syncTotalStock()
+    }
+
+    fun defaultAvailableWarehouse(): WarehouseOrigin = when {
+        warehouseOrigin == WarehouseOrigin.CHINA && chinaStockQuantity > 0 -> WarehouseOrigin.CHINA
+        iranStockQuantity > 0 -> WarehouseOrigin.IRAN
+        chinaStockQuantity > 0 -> WarehouseOrigin.CHINA
+        else -> warehouseOrigin
+    }
+
+    fun effectivePriceForWarehouse(warehouse: WarehouseOrigin = defaultAvailableWarehouse()): BigDecimal = when (warehouse) {
+        WarehouseOrigin.CHINA -> chinaPrice?.takeIf { it > BigDecimal.ZERO }
+            ?: discountPrice?.takeIf { it > BigDecimal.ZERO }
+            ?: price
+        WarehouseOrigin.IRAN -> discountPrice?.takeIf { it > BigDecimal.ZERO } ?: price
+    }
+
+    fun resolveUnitPrice(quantity: Int, warehouse: WarehouseOrigin = defaultAvailableWarehouse()): BigDecimal {
         if (saleType == SaleType.MOQ && priceTiers.isNotEmpty()) {
             val matchedTier = priceTiers
                 .sortedBy { it.minQuantity }
                 .lastOrNull { quantity >= it.minQuantity }
             if (matchedTier != null) return matchedTier.unitPrice
         }
-        return effectiveBasePrice()
+        return effectivePriceForWarehouse(warehouse)
     }
 
     fun replacePriceTiers(newTiers: List<Pair<Int, BigDecimal>>) {
@@ -295,7 +331,11 @@ class CartItem(
     val product: Product,
 
     @Column(nullable = false)
-    var quantity: Int = 1
+    var quantity: Int = 1,
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "selected_warehouse", nullable = false, length = 20)
+    var selectedWarehouse: WarehouseOrigin = WarehouseOrigin.IRAN
 )
 
 @Entity
@@ -363,5 +403,9 @@ class OrderItem(
     val quantity: Int,
 
     @Column(nullable = false, precision = 18, scale = 0)
-    val unitPrice: BigDecimal
+    val unitPrice: BigDecimal,
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "selected_warehouse", nullable = false, length = 20)
+    val selectedWarehouse: WarehouseOrigin = WarehouseOrigin.IRAN
 )

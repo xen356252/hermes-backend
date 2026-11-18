@@ -1,0 +1,2099 @@
+﻿==========================================
+FILE: D:\tsv\b2bb2c\Backend\backend\gradle\wrapper\gradle-wrapper.properties
+==========================================
+distributionBase=GRADLE_USER_HOME
+distributionPath=wrapper/dists
+distributionUrl=https\://services.gradle.org/distributions/gradle-9.8.2-bin.zip
+networkTimeout=10000
+retries=0
+retryBackOffMs=500
+validateDistributionUrl=true
+zipStoreBase=GRADLE_USER_HOME
+zipStorePath=wrapper/dists
+
+
+==========================================
+FILE: D:\tsv\b2bb2c\Backend\backend\src\main\kotlin\com\marketplace\backend\config\SecurityAndSwaggerConfig.kt
+==========================================
+package com.marketplace.backend.config
+
+import com.marketplace.backend.controller.JwtService
+import io.swagger.v3.oas.models.Components
+import io.swagger.v3.oas.models.OpenAPI
+import io.swagger.v3.oas.models.info.Info
+import io.swagger.v3.oas.models.security.SecurityRequirement
+import io.swagger.v3.oas.models.security.SecurityScheme
+import jakarta.servlet.FilterChain
+import jakarta.servlet.http.HttpServletRequest
+import jakarta.servlet.http.HttpServletResponse
+import org.springframework.context.annotation.Bean
+import org.springframework.context.annotation.Configuration
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken
+import org.springframework.security.config.annotation.web.builders.HttpSecurity
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity
+import org.springframework.security.config.http.SessionCreationPolicy
+import org.springframework.security.core.authority.SimpleGrantedAuthority
+import org.springframework.security.core.context.SecurityContextHolder
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder
+import org.springframework.security.crypto.password.PasswordEncoder
+import org.springframework.security.web.SecurityFilterChain
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter
+import org.springframework.stereotype.Component
+import org.springframework.web.cors.CorsConfiguration
+import org.springframework.web.cors.UrlBasedCorsConfigurationSource
+import org.springframework.web.filter.OncePerRequestFilter
+
+@Component
+class JwtAuthenticationFilter(
+    private val jwtService: JwtService
+) : OncePerRequestFilter() {
+
+    override fun doFilterInternal(
+        request: HttpServletRequest,
+        response: HttpServletResponse,
+        filterChain: FilterChain
+    ) {
+        val authHeader = request.getHeader("Authorization")
+        if (!authHeader.isNullOrBlank() && authHeader.startsWith("Bearer ")) {
+            val token = authHeader.removePrefix("Bearer ").trim()
+            val claims = jwtService.parseAndValidate(token)
+            if (claims != null && SecurityContextHolder.getContext().authentication == null) {
+                val userId = claims.subject
+                val role = claims["role"]?.toString() ?: "BUYER"
+                val auth = UsernamePasswordAuthenticationToken(
+                    userId,
+                    null,
+                    listOf(SimpleGrantedAuthority("ROLE_$role"))
+                )
+                SecurityContextHolder.getContext().authentication = auth
+            }
+        }
+        filterChain.doFilter(request, response)
+    }
+}
+
+@Configuration
+@EnableWebSecurity
+class SecurityAndSwaggerConfig(
+    private val jwtAuthenticationFilter: JwtAuthenticationFilter
+) {
+
+    @Bean
+    fun passwordEncoder(): PasswordEncoder = BCryptPasswordEncoder()
+
+    @Bean
+    fun securityFilterChain(http: HttpSecurity): SecurityFilterChain {
+        http
+            .csrf { it.disable() }
+            .cors { it.configurationSource(corsConfigurationSource()) }
+            .sessionManagement { it.sessionCreationPolicy(SessionCreationPolicy.STATELESS) }
+            .authorizeHttpRequests { auth ->
+                auth.requestMatchers(
+                    "/v3/api-docs/**",
+                    "/swagger-ui/**",
+                    "/swagger-ui.html",
+                    "/api/v1/**"
+                ).permitAll()
+                auth.anyRequest().permitAll()
+            }
+            .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter::class.java)
+        return http.build()
+    }
+
+    @Bean
+    fun corsConfigurationSource(): UrlBasedCorsConfigurationSource {
+        val config = CorsConfiguration().apply {
+            allowedOrigins = listOf("*")
+            allowedMethods = listOf("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
+            allowedHeaders = listOf("*")
+        }
+        return UrlBasedCorsConfigurationSource().apply {
+            registerCorsConfiguration("/**", config)
+        }
+    }
+
+    @Bean
+    fun customOpenAPI(): OpenAPI {
+        val schemeName = "BearerAuth"
+        return OpenAPI()
+            .info(
+                Info()
+                    .title("Hermes Marketplace API - Sprint 1")
+                    .version("1.0.0")
+                    .description("Backend REST APIs for Hermes (Ù‡Ø±Ù…Ø³) B2B/B2C Native Android Marketplace")
+            )
+            .addSecurityItem(SecurityRequirement().addList(schemeName))
+            .components(
+                Components().addSecuritySchemes(
+                    schemeName,
+                    SecurityScheme()
+                        .name(schemeName)
+                        .type(SecurityScheme.Type.HTTP)
+                        .scheme("bearer")
+                        .bearerFormat("JWT")
+                )
+            )
+    }
+}
+
+==========================================
+FILE: D:\tsv\b2bb2c\Backend\backend\src\main\kotlin\com\marketplace\backend\BackendApplication.kt
+==========================================
+package com.marketplace.backend
+
+import org.springframework.boot.autoconfigure.SpringBootApplication
+import org.springframework.boot.runApplication
+
+@SpringBootApplication
+class BackendApplication
+
+fun main(args: Array<String>) {
+	runApplication<BackendApplication>(*args)
+}
+
+
+==========================================
+FILE: D:\tsv\b2bb2c\Backend\backend\src\main\kotlin\com\marketplace\backend\DataSeeder.kt
+==========================================
+package com.marketplace.backend.config
+
+import com.marketplace.backend.model.*
+import com.marketplace.backend.repository.*
+import org.springframework.boot.CommandLineRunner
+import org.springframework.jdbc.core.JdbcTemplate
+import org.springframework.security.crypto.password.PasswordEncoder
+import org.springframework.stereotype.Component
+import org.springframework.transaction.annotation.Transactional
+
+@Component
+class DataSeeder(
+    private val jdbcTemplate: JdbcTemplate,
+    private val userRepository: UserRepository,
+    private val categoryRepository: CategoryRepository,
+    private val bannerRepository: BannerRepository,
+    private val passwordEncoder: PasswordEncoder
+) : CommandLineRunner {
+
+    @Transactional
+    override fun run(vararg args: String) {
+        val defaultAdminHash = requireNotNull(passwordEncoder.encode("1234"))
+
+        // Idempotent schema upgrades for PostgreSQL columns
+        listOf(
+            "ALTER TABLE products ALTER COLUMN image_url TYPE TEXT",
+            "ALTER TABLE products ALTER COLUMN description TYPE TEXT",
+            "ALTER TABLE products ALTER COLUMN title TYPE VARCHAR(300)",
+            "ALTER TABLE products ADD COLUMN IF NOT EXISTS sale_type VARCHAR(20) DEFAULT 'SINGLE' NOT NULL",
+            "ALTER TABLE products ADD COLUMN IF NOT EXISTS min_order_quantity INTEGER DEFAULT 1 NOT NULL",
+            "ALTER TABLE products ADD COLUMN IF NOT EXISTS warehouse_origin VARCHAR(20) DEFAULT 'IRAN' NOT NULL",
+            "ALTER TABLE products ADD COLUMN IF NOT EXISTS china_price NUMERIC(18,0)",
+            "ALTER TABLE products ADD COLUMN IF NOT EXISTS delivery_time_range VARCHAR(120) DEFAULT 'Ø¢Ù…Ø§Ø¯Ù‡ Ø§Ø±Ø³Ø§Ù„ Ø§Ø² Ø§Ù†Ø¨Ø§Ø± Ø§ÛŒØ±Ø§Ù† (Û± ØªØ§ Û³ Ø±ÙˆØ² Ú©Ø§Ø±ÛŒ)' NOT NULL",
+            "ALTER TABLE banners ALTER COLUMN image_url TYPE TEXT",
+            "ALTER TABLE banners ALTER COLUMN title TYPE TEXT",
+            "ALTER TABLE banners ALTER COLUMN target_url TYPE TEXT",
+            "ALTER TABLE booths ALTER COLUMN logo_url TYPE TEXT",
+            "ALTER TABLE booths ALTER COLUMN banner_url TYPE TEXT",
+            "ALTER TABLE booths ALTER COLUMN description TYPE TEXT",
+            "ALTER TABLE categories ALTER COLUMN icon_url TYPE TEXT",
+            "ALTER TABLE users ALTER COLUMN avatar_url TYPE TEXT",
+            "ALTER TABLE users ALTER COLUMN bio TYPE TEXT",
+            "UPDATE users SET password = '$defaultAdminHash' WHERE password IS NULL OR password = ''"
+        ).forEach { sql ->
+            try {
+                jdbcTemplate.execute(sql)
+            } catch (_: Exception) {}
+        }
+
+        // Ensure Admin account exists and its password is always BCrypt-hashed
+        val existingAdmin = userRepository.findByPhone("09120000000")
+        if (existingAdmin == null) {
+            userRepository.save(
+                User(
+                    phone = "09120000000",
+                    fullName = "Ù…Ø¯ÛŒØ± Ú©Ù„ Ù‡Ø±Ù…Ø³",
+                    password = defaultAdminHash,
+                    role = UserRole.ADMIN,
+                    email = "admin@hermes.ir"
+                )
+            )
+        } else {
+            existingAdmin.role = UserRole.ADMIN
+            existingAdmin.fullName = "Ù…Ø¯ÛŒØ± Ú©Ù„ Ù‡Ø±Ù…Ø³"
+            if (!existingAdmin.password.startsWith("\$2")) {
+                existingAdmin.password = defaultAdminHash
+            }
+            userRepository.save(existingAdmin)
+        }
+
+        // Seed hierarchical categories using a single map structure (DRY)
+        val categoryHierarchy = mapOf(
+            "Ù…ÙˆØ¨Ø§ÛŒÙ„" to listOf(
+                "Ú¯ÙˆØ´ÛŒâ€ŒÙ‡Ø§ÛŒ Ø§Ù¾Ù„",
+                "Ú¯ÙˆØ´ÛŒâ€ŒÙ‡Ø§ÛŒ Ø³Ø§Ù…Ø³ÙˆÙ†Ú¯ Ùˆ Ø´ÛŒØ§Ø¦ÙˆÙ…ÛŒ",
+                "Ú¯ÙˆØ´ÛŒ Ø¨Ø± Ø§Ø³Ø§Ø³ Ù‚ÛŒÙ…Øª",
+                "Ú©ÛŒÙÛŒØª Ø¯ÙˆØ±Ø¨ÛŒÙ†",
+                "Ù„ÙˆØ§Ø²Ù… Ø¬Ø§Ù†Ø¨ÛŒ Ù…ÙˆØ¨Ø§ÛŒÙ„",
+                "Ù‚Ø§Ø¨ Ú¯ÙˆØ´ÛŒ"
+            ),
+            "Ù„Ù¾â€ŒØªØ§Ù¾ Ùˆ Ø³ÛŒØ³ØªÙ…" to listOf(
+                "Ù„Ù¾â€ŒØªØ§Ù¾ Ú¯ÛŒÙ…ÛŒÙ†Ú¯",
+                "Ù…Ú©â€ŒØ¨ÙˆÚ©",
+                "Ù…Ø§Ù†ÛŒØªÙˆØ± Ùˆ Ù‚Ø·Ø¹Ø§Øª",
+                "Ú©ÛŒØ¨ÙˆØ±Ø¯ Ùˆ Ù…Ø§ÙˆØ³"
+            ),
+            "ØµÙˆØªÛŒ Ùˆ ØªØµÙˆÛŒØ±ÛŒ" to listOf(
+                "Ù‡Ø¯ÙÙˆÙ† Ùˆ Ù‡Ù†Ø¯Ø²ÙØ±ÛŒ",
+                "ØªÙ„ÙˆÛŒØ²ÛŒÙˆÙ† Ù‡ÙˆØ´Ù…Ù†Ø¯",
+                "Ø§Ø³Ù¾ÛŒÚ©Ø± Ø¨Ù„ÙˆØªÙˆØ«ÛŒ"
+            ),
+            "Ø³Ø§Ø¹Øª Ùˆ Ú¯Ø¬Øª" to listOf(
+                "Ø³Ø§Ø¹Øª Ù‡ÙˆØ´Ù…Ù†Ø¯",
+                "Ù…Ú†â€ŒØ¨Ù†Ø¯ ÙˆØ±Ø²Ø´ÛŒ",
+                "Ø¨Ù†Ø¯ Ùˆ Ú¯Ù„Ø³ Ø³Ø§Ø¹Øª"
+            ),
+            "Ù„ÙˆØ§Ø²Ù… Ø®Ø§Ù†Ú¯ÛŒ" to listOf(
+                "Ù‚Ù‡ÙˆÙ‡â€ŒØ³Ø§Ø² Ùˆ Ø§Ø³Ù¾Ø±Ø³Ùˆ",
+                "Ø³Ø±Ø®â€ŒÚ©Ù† Ø¨Ø¯ÙˆÙ† Ø±ÙˆØºÙ†",
+                "Ø¬Ø§Ø±ÙˆØ¨Ø±Ù‚ÛŒ Ø±Ø¨Ø§ØªÛŒÚ©"
+            )
+        )
+
+        val existingRoots = categoryRepository.findByParentIsNull().associateBy { it.name }
+        categoryHierarchy.forEach { (rootName, subNames) ->
+            val root = existingRoots[rootName] ?: categoryRepository.save(Category(name = rootName))
+            val existingSubs = categoryRepository.findByParentId(root.id).map { it.name }.toSet()
+            subNames.filterNot { it in existingSubs }.forEach { subName ->
+                categoryRepository.save(Category(name = subName, parent = root))
+            }
+        }
+
+        if (bannerRepository.count() == 0L) {
+            bannerRepository.saveAll(
+                listOf(
+                    Banner(title = "Ø¬Ø´Ù†ÙˆØ§Ø±Ù‡ ØªØ®ÙÛŒÙâ€ŒÙ‡Ø§ÛŒ ÙˆÛŒÚ˜Ù‡ Ø¨Ø§Ø²Ø§Ø±Ú¯Ø§Ù‡ Ù‡Ø±Ù…Ø³", imageUrl = "", targetUrl = "/categories/1"),
+                    Banner(title = "Ø®Ø±ÛŒØ¯ ØªÚ©ÛŒ (Ø§Ù†Ø¨Ø§Ø± Ø§ÛŒØ±Ø§Ù† Ùˆ Ú†ÛŒÙ†) Ùˆ Ø¹Ù…Ø¯Ù‡ (MOQ) Ø§Ø² ØªØ§Ù…ÛŒÙ†â€ŒÚ©Ù†Ù†Ø¯Ú¯Ø§Ù†", imageUrl = "", targetUrl = "/categories/2")
+                )
+            )
+        }
+    }
+}
+
+==========================================
+FILE: D:\tsv\b2bb2c\Backend\backend\src\main\kotlin\controller\AuthAndUserController.kt
+==========================================
+package com.marketplace.backend.controller
+
+import com.marketplace.backend.model.Address
+import com.marketplace.backend.model.User
+import com.marketplace.backend.model.UserRole
+import com.marketplace.backend.repository.AddressRepository
+import com.marketplace.backend.repository.BoothRepository
+import com.marketplace.backend.repository.UserRepository
+import io.jsonwebtoken.Claims
+import io.jsonwebtoken.Jwts
+import io.jsonwebtoken.security.Keys
+import io.swagger.v3.oas.annotations.Operation
+import io.swagger.v3.oas.annotations.tags.Tag
+import org.springframework.beans.factory.annotation.Value
+import org.springframework.http.HttpStatus
+import org.springframework.http.ResponseEntity
+import org.springframework.security.crypto.password.PasswordEncoder
+import org.springframework.stereotype.Service
+import org.springframework.transaction.annotation.Transactional
+import org.springframework.web.bind.annotation.*
+import org.springframework.web.server.ResponseStatusException
+import java.net.HttpURLConnection
+import java.net.URI
+import java.nio.charset.StandardCharsets
+import java.security.SecureRandom
+import java.util.*
+import java.util.concurrent.ConcurrentHashMap
+
+/**
+ * Centralized, DRY input validator used across all controllers.
+ */
+object InputValidator {
+    private val IRAN_PHONE_REGEX = Regex("^09\\d{9}$")
+    private val HUMAN_NAME_REGEX = Regex("^[\\u0600-\\u06FFa-zA-Z\\s\\u200C]{2,80}$")
+    private val POSTAL_CODE_REGEX = Regex("^\\d{10}$")
+    private val NATIONAL_CODE_REGEX = Regex("^\\d{10}$")
+    private val SHEBA_REGEX = Regex("^(IR)?\\d{24}$")
+
+    fun normalizePhone(raw: String): String {
+        val ascii = raw.trim().map { ch ->
+            when (ch) {
+                in 'Û°'..'Û¹' -> '0' + (ch - 'Û°')
+                in 'Ù '..'Ù©' -> '0' + (ch - 'Ù ')
+                else -> ch
+            }
+        }.joinToString("")
+        val digits = ascii.filter { it.isDigit() }
+        return when {
+            digits.startsWith("989") && digits.length == 12 -> "0" + digits.removePrefix("98")
+            digits.startsWith("9") && digits.length == 10 -> "0$digits"
+            else -> digits
+        }
+    }
+
+    fun requireValidPhone(rawPhone: String): String {
+        val phone = normalizePhone(rawPhone)
+        if (!IRAN_PHONE_REGEX.matches(phone)) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Ø´Ù…Ø§Ø±Ù‡ Ù…ÙˆØ¨Ø§ÛŒÙ„ Ø¨Ø§ÛŒØ¯ Û±Û± Ø±Ù‚Ù… Ùˆ Ø¨Ø§ 09 Ø´Ø±ÙˆØ¹ Ø´ÙˆØ¯")
+        }
+        return phone
+    }
+
+    fun requireValidHumanName(rawName: String, fieldLabel: String = "Ù†Ø§Ù… Ùˆ Ù†Ø§Ù… Ø®Ø§Ù†ÙˆØ§Ø¯Ú¯ÛŒ"): String {
+        val clean = rawName.trim()
+        if (!HUMAN_NAME_REGEX.matches(clean)) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "$fieldLabel ÙÙ‚Ø· Ø¨Ø§ÛŒØ¯ Ø´Ø§Ù…Ù„ Ø­Ø±ÙˆÙ ÙØ§Ø±Ø³ÛŒ ÛŒØ§ Ø§Ù†Ú¯Ù„ÛŒØ³ÛŒ Ø¨Ø§Ø´Ø¯")
+        }
+        return clean
+    }
+
+    fun requireValidPostalCode(rawPostal: String): String {
+        val clean = rawPostal.trim()
+        if (!POSTAL_CODE_REGEX.matches(clean)) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Ú©Ø¯ Ù¾Ø³ØªÛŒ Ø¨Ø§ÛŒØ¯ Ø¯Ù‚ÛŒÙ‚Ø§Ù‹ Û±Û° Ø±Ù‚Ù… Ø¨Ø§Ø´Ø¯")
+        }
+        return clean
+    }
+
+    fun requireValidNationalCode(rawCode: String): String {
+        val clean = rawCode.trim()
+        if (!NATIONAL_CODE_REGEX.matches(clean) || (0..9).any { d -> clean.all { it == ('0' + d) } }) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Ú©Ø¯ Ù…Ù„ÛŒ Ø¨Ø§ÛŒØ¯ Û±Û° Ø±Ù‚Ù… Ù…Ø¹ØªØ¨Ø± Ø¨Ø§Ø´Ø¯")
+        }
+        val check = clean[9] - '0'
+        val sum = (0..8).sumOf { i -> (clean[i] - '0') * (10 - i) } % 11
+        val isValid = (sum < 2 && check == sum) || (sum >= 2 && check + sum == 11)
+        if (!isValid) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Ú©Ø¯ Ù…Ù„ÛŒ ÙˆØ§Ø±Ø¯ Ø´Ø¯Ù‡ Ù…Ø¹ØªØ¨Ø± Ù†ÛŒØ³Øª")
+        }
+        return clean
+    }
+
+    fun normalizeSheba(rawSheba: String): String {
+        val clean = rawSheba.trim().uppercase()
+        if (!SHEBA_REGEX.matches(clean)) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Ø´Ù…Ø§Ø±Ù‡ Ø´Ø¨Ø§ Ø¨Ø§ÛŒØ¯ Û²Û´ Ø±Ù‚Ù… (Ù‡Ù…Ø±Ø§Ù‡ Ø¨Ø§ IR) Ø¨Ø§Ø´Ø¯")
+        }
+        return if (clean.startsWith("IR")) clean else "IR$clean"
+    }
+}
+
+interface SmsService {
+    fun sendOtp(phone: String, code: String): Boolean
+}
+
+@Service
+class SmsIrSandboxService(
+    @Value("\${sms.ir.api-key:sxyroI9E6KAdoAKZbT74dbegiJffEDeNUELzyGS424sqIWjt}") private val apiKey: String,
+    @Value("\${sms.ir.template-id:100000}") private val templateId: Int
+) : SmsService {
+
+    override fun sendOtp(phone: String, code: String): Boolean {
+        val cleanKey = apiKey.trim()
+        if (cleanKey.isBlank()) return false
+
+        return try {
+            val endpoint = "https://api.sms.ir/v1/send/verify"
+            val payload = """
+                {
+                  "mobile": "$phone",
+                  "templateId": $templateId,
+                  "parameters": [
+                    {
+                      "name": "CODE",
+                      "value": "$code"
+                    }
+                  ]
+                }
+            """.trimIndent()
+
+            val conn = (URI(endpoint).toURL().openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                doOutput = true
+                connectTimeout = 8000
+                readTimeout = 8000
+                setRequestProperty("Content-Type", "application/json; charset=UTF-8")
+                setRequestProperty("Accept", "application/json")
+                setRequestProperty("X-API-KEY", cleanKey)
+            }
+            conn.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
+            val status = conn.responseCode
+            val responseText = if (status in 200..299) {
+                conn.inputStream.bufferedReader().readText()
+            } else {
+                conn.errorStream?.bufferedReader()?.readText().orEmpty()
+            }
+            println("âœ… [SMS.ir Sandbox] Status: $status | Body: $responseText")
+            status in 200..299
+        } catch (e: Exception) {
+            println("âš ï¸ [SMS.ir Sandbox] Connection failed: ${e.message}")
+            false
+        }
+    }
+}
+
+@Service
+class JwtService {
+    private val secret = "SnapMarketplaceSuperSecretKeyForJwtSigning2026Sprint1!"
+    private val key = Keys.hmacShaKeyFor(secret.toByteArray(StandardCharsets.UTF_8))
+
+    fun generateToken(user: User): String {
+        val sevenDaysInMillis = 604_800_000L
+        return Jwts.builder()
+            .subject(user.id.toString())
+            .claim("phone", user.phone)
+            .claim("role", user.role.name)
+            .issuedAt(Date())
+            .expiration(Date(System.currentTimeMillis() + sevenDaysInMillis))
+            .signWith(key)
+            .compact()
+    }
+
+    fun parseAndValidate(token: String): Claims? = try {
+        Jwts.parser()
+            .verifyWith(key)
+            .build()
+            .parseSignedClaims(token)
+            .payload
+    } catch (_: Exception) {
+        null
+    }
+}
+
+data class SendOtpRequest(val phone: String)
+data class SendOtpResponse(
+    val message: String,
+    val mockOtpHint: String,
+    val sentViaSmsIr: Boolean = false
+)
+
+data class VerifyOtpRequest(val phone: String, val otpCode: String)
+
+data class RegisterRequest(
+    val phone: String,
+    val fullName: String = "",
+    val role: UserRole = UserRole.BUYER,
+    val otpCode: String
+)
+
+data class ChangePasswordRequest(
+    val phone: String,
+    val oldPassword: String,
+    val newPassword: String
+)
+
+data class AuthResponse(
+    val token: String,
+    val user: UserProfileDto
+)
+
+data class UserProfileDto(
+    val id: Long,
+    val phone: String,
+    val fullName: String,
+    val role: UserRole,
+    val avatarUrl: String?,
+    val nationalCode: String? = null,
+    val email: String? = null,
+    val birthDate: String? = null,
+    val shebaNumber: String? = null,
+    val bio: String? = null
+)
+
+data class UpdateProfileRequest(
+    val fullName: String,
+    val phone: String? = null,
+    val avatarUrl: String? = null,
+    val role: UserRole? = null,
+    val nationalCode: String? = null,
+    val email: String? = null,
+    val birthDate: String? = null,
+    val shebaNumber: String? = null,
+    val bio: String? = null
+)
+
+data class AddressDto(
+    val id: Long,
+    val title: String,
+    val city: String,
+    val fullAddress: String,
+    val postalCode: String,
+    val isDefault: Boolean
+)
+
+data class CreateAddressRequest(
+    val title: String,
+    val city: String,
+    val fullAddress: String,
+    val postalCode: String,
+    val isDefault: Boolean = false
+)
+
+@RestController
+@RequestMapping("/api/v1/auth")
+@Tag(name = "1. Authentication", description = "SMS.ir Sandbox OTP & BCrypt Password Authentication")
+class AuthController(
+    private val userRepository: UserRepository,
+    private val smsService: SmsService,
+    private val jwtService: JwtService,
+    private val passwordEncoder: PasswordEncoder
+) {
+    private data class HashedOtpRecord(
+        val hashedCode: String,
+        val expiresAtMillis: Long,
+        var failedAttempts: Int = 0
+    )
+
+    private val secureRandom = SecureRandom()
+    private val otpStore = ConcurrentHashMap<String, HashedOtpRecord>()
+    private val otpTtlMillis = 180_000L // 3 minutes
+    private val maxOtpAttempts = 5
+
+    private fun encodeSecret(raw: String): String =
+        requireNotNull(passwordEncoder.encode(raw)) { "Failed to hash secret" }
+
+    private fun verifyAndConsumeOtp(phone: String, rawCode: String): Boolean {
+        val record = otpStore[phone] ?: return false
+        if (System.currentTimeMillis() > record.expiresAtMillis) {
+            otpStore.remove(phone)
+            return false
+        }
+        if (passwordEncoder.matches(rawCode, record.hashedCode)) {
+            otpStore.remove(phone)
+            return true
+        }
+        record.failedAttempts += 1
+        if (record.failedAttempts >= maxOtpAttempts) {
+            otpStore.remove(phone)
+        }
+        return false
+    }
+
+    @PostMapping("/send-otp")
+    @Operation(summary = "Generate 4-digit OTP, hash in memory with TTL, and dispatch via SMS.ir Sandbox API")
+    fun sendOtp(@RequestBody req: SendOtpRequest): ResponseEntity<SendOtpResponse> {
+        val cleanPhone = InputValidator.requireValidPhone(req.phone)
+        val rawOtp = (1000 + secureRandom.nextInt(9000)).toString()
+
+        otpStore[cleanPhone] = HashedOtpRecord(
+            hashedCode = encodeSecret(rawOtp),
+            expiresAtMillis = System.currentTimeMillis() + otpTtlMillis
+        )
+
+        val sent = smsService.sendOtp(cleanPhone, rawOtp)
+        val message = if (sent) {
+            "Ú©Ø¯ ØªØ§ÛŒÛŒØ¯ Ø§Ø² Ø·Ø±ÛŒÙ‚ ÙˆØ¨â€ŒØ³Ø±ÙˆÛŒØ³ Ø¢Ø²Ù…Ø§ÛŒØ´ÛŒ SMS.ir Ø§Ø±Ø³Ø§Ù„ Ø´Ø¯"
+        } else {
+            "Ú©Ø¯ ØªØ§ÛŒÛŒØ¯ ÛŒÚ©Ø¨Ø§Ø± Ù…ØµØ±Ù (Ù…Ø­ÛŒØ· ØªØ³Øª Sandbox) ØªÙˆÙ„ÛŒØ¯ Ø´Ø¯"
+        }
+
+        return ResponseEntity.ok(
+            SendOtpResponse(
+                message = message,
+                mockOtpHint = rawOtp,
+                sentViaSmsIr = sent
+            )
+        )
+    }
+
+    @PostMapping("/register")
+    @Transactional
+    @Operation(summary = "Register a Buyer or Seller using SMS.ir OTP or Password (stored as BCrypt hash)")
+    fun register(@RequestBody req: RegisterRequest): ResponseEntity<AuthResponse> {
+        val cleanPhone = InputValidator.requireValidPhone(req.phone)
+        val cleanCredential = req.otpCode.trim()
+
+        if (cleanCredential.length < 4) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Ø±Ù…Ø² Ø¹Ø¨ÙˆØ± ÛŒØ§ Ú©Ø¯ ØªØ§ÛŒÛŒØ¯ Ù¾ÛŒØ§Ù…Ú©ÛŒ Ø¨Ø§ÛŒØ¯ Ø­Ø¯Ø§Ù‚Ù„ Û´ Ú©Ø§Ø±Ø§Ú©ØªØ± Ø¨Ø§Ø´Ø¯")
+        }
+        if (userRepository.existsByPhone(cleanPhone)) {
+            throw ResponseStatusException(HttpStatus.CONFLICT, "Ø§ÛŒÙ† Ø´Ù…Ø§Ø±Ù‡ Ù…ÙˆØ¨Ø§ÛŒÙ„ Ù‚Ø¨Ù„Ø§Ù‹ Ø«Ø¨Øª Ø´Ø¯Ù‡ Ø§Ø³Øª. Ù„Ø·ÙØ§Ù‹ ÙˆØ§Ø±Ø¯ Ø´ÙˆÛŒØ¯.")
+        }
+
+        // Consume active OTP if the user registered via SMS code
+        verifyAndConsumeOtp(cleanPhone, cleanCredential)
+
+        val effectiveRole = if (cleanPhone == "09120000000") UserRole.ADMIN else req.role
+        val defaultName = when (effectiveRole) {
+            UserRole.ADMIN -> "Ù…Ø¯ÛŒØ± Ú©Ù„ Ù‡Ø±Ù…Ø³"
+            UserRole.SELLER -> "ØºØ±ÙÙ‡â€ŒØ¯Ø§Ø± Ù‡Ø±Ù…Ø³"
+            UserRole.BUYER -> "Ú©Ø§Ø±Ø¨Ø± Ù‡Ø±Ù…Ø³"
+        }
+        val finalName = req.fullName.trim().takeIf { it.isNotBlank() }
+            ?.let { InputValidator.requireValidHumanName(it) }
+            ?: defaultName
+
+        val newUser = userRepository.save(
+            User(
+                phone = cleanPhone,
+                fullName = finalName,
+                password = encodeSecret(cleanCredential),
+                role = effectiveRole
+            )
+        )
+        val token = jwtService.generateToken(newUser)
+        return ResponseEntity.status(HttpStatus.CREATED).body(
+            AuthResponse(token = token, user = newUser.toDto())
+        )
+    }
+
+    @PostMapping("/login")
+    @Operation(summary = "Login using either SMS.ir Sandbox OTP or BCrypt Password")
+    fun login(@RequestBody req: VerifyOtpRequest): ResponseEntity<AuthResponse> {
+        val cleanPhone = InputValidator.requireValidPhone(req.phone)
+        val cleanCredential = req.otpCode.trim()
+
+        if (cleanCredential.length < 4) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Ø±Ù…Ø² Ø¹Ø¨ÙˆØ± ÛŒØ§ Ú©Ø¯ ØªØ§ÛŒÛŒØ¯ Ø¨Ø§ÛŒØ¯ Ø­Ø¯Ø§Ù‚Ù„ Û´ Ú©Ø§Ø±Ø§Ú©ØªØ± Ø¨Ø§Ø´Ø¯")
+        }
+
+        val user = userRepository.findByPhone(cleanPhone)
+            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "Ú©Ø§Ø±Ø¨Ø±ÛŒ Ø¨Ø§ Ø§ÛŒÙ† Ø´Ù…Ø§Ø±Ù‡ ÛŒØ§ÙØª Ù†Ø´Ø¯. Ø§Ø¨ØªØ¯Ø§ Ø«Ø¨Øªâ€ŒÙ†Ø§Ù… Ú©Ù†ÛŒØ¯.")
+
+        val isOtpValid = verifyAndConsumeOtp(cleanPhone, cleanCredential)
+        val isPasswordValid = !isOtpValid && passwordEncoder.matches(cleanCredential, user.password)
+
+        if (!isOtpValid && !isPasswordValid) {
+            throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "Ø±Ù…Ø² Ø¹Ø¨ÙˆØ± ÛŒØ§ Ú©Ø¯ ØªØ§ÛŒÛŒØ¯ Ù¾ÛŒØ§Ù…Ú©ÛŒ ÙˆØ§Ø±Ø¯ Ø´Ø¯Ù‡ Ø§Ø´ØªØ¨Ø§Ù‡ Ø§Ø³Øª")
+        }
+
+        val token = jwtService.generateToken(user)
+        return ResponseEntity.ok(AuthResponse(token = token, user = user.toDto()))
+    }
+
+    @PostMapping("/change-password")
+    @Transactional
+    @Operation(summary = "Verify old password (or active SMS OTP) and save new BCrypt password")
+    fun changePassword(@RequestBody req: ChangePasswordRequest): Map<String, String> {
+        val cleanPhone = InputValidator.requireValidPhone(req.phone)
+        val oldCredential = req.oldPassword.trim()
+        val newPassword = req.newPassword.trim()
+
+        if (newPassword.length < 4) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Ø±Ù…Ø² Ø¹Ø¨ÙˆØ± Ø¬Ø¯ÛŒØ¯ Ø¨Ø§ÛŒØ¯ Ø­Ø¯Ø§Ù‚Ù„ Û´ Ú©Ø§Ø±Ø§Ú©ØªØ± Ø¨Ø§Ø´Ø¯")
+        }
+
+        val user = userRepository.findByPhone(cleanPhone)
+            ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "Ú©Ø§Ø±Ø¨Ø±ÛŒ Ø¨Ø§ Ø§ÛŒÙ† Ø´Ù…Ø§Ø±Ù‡ Ù…ÙˆØ¨Ø§ÛŒÙ„ ÛŒØ§ÙØª Ù†Ø´Ø¯")
+
+        val isOtpValid = verifyAndConsumeOtp(cleanPhone, oldCredential)
+        val isOldPassValid = !isOtpValid && passwordEncoder.matches(oldCredential, user.password)
+
+        if (!isOtpValid && !isOldPassValid) {
+            throw ResponseStatusException(HttpStatus.UNAUTHORIZED, "Ø±Ù…Ø² Ø¹Ø¨ÙˆØ± Ù‚Ø¨Ù„ÛŒ ÛŒØ§ Ú©Ø¯ Ù¾ÛŒØ§Ù…Ú©ÛŒ Ø§Ø´ØªØ¨Ø§Ù‡ Ø§Ø³Øª")
+        }
+
+        user.password = encodeSecret(newPassword)
+        userRepository.save(user)
+        return mapOf("message" to "Ø±Ù…Ø² Ø¹Ø¨ÙˆØ± Ø´Ù…Ø§ Ø¨Ø§ Ù…ÙˆÙÙ‚ÛŒØª ØªØºÛŒÛŒØ± ÛŒØ§ÙØª")
+    }
+}
+
+@RestController
+@RequestMapping("/api/v1/users")
+@Tag(name = "2. User Profile, Booths & Addresses", description = "Profile management, Seller Booths & Shipping Address CRUD")
+class UserProfileController(
+    private val userRepository: UserRepository,
+    private val addressRepository: AddressRepository,
+    private val boothRepository: BoothRepository
+) {
+
+    @GetMapping("/{userId}/profile")
+    fun getProfile(@PathVariable userId: Long): UserProfileDto {
+        val user = userRepository.findById(userId).orElseThrow {
+            ResponseStatusException(HttpStatus.NOT_FOUND, "Ú©Ø§Ø±Ø¨Ø± ÛŒØ§ÙØª Ù†Ø´Ø¯")
+        }
+        return user.toDto()
+    }
+
+    @PutMapping("/{userId}/profile")
+    @Transactional
+    fun updateProfile(
+        @PathVariable userId: Long,
+        @RequestBody req: UpdateProfileRequest
+    ): UserProfileDto {
+        val user = userRepository.findById(userId).orElseThrow {
+            ResponseStatusException(HttpStatus.NOT_FOUND, "Ú©Ø§Ø±Ø¨Ø± ÛŒØ§ÙØª Ù†Ø´Ø¯")
+        }
+        user.fullName = InputValidator.requireValidHumanName(req.fullName)
+
+        req.phone?.takeIf { it.isNotBlank() }?.let { rawPhone ->
+            val cleanPhone = InputValidator.requireValidPhone(rawPhone)
+            if (cleanPhone != user.phone && userRepository.existsByPhone(cleanPhone)) {
+                throw ResponseStatusException(HttpStatus.CONFLICT, "Ø§ÛŒÙ† Ø´Ù…Ø§Ø±Ù‡ Ù…ÙˆØ¨Ø§ÛŒÙ„ Ù…ØªØ¹Ù„Ù‚ Ø¨Ù‡ Ø­Ø³Ø§Ø¨ Ø¯ÛŒÚ¯Ø±ÛŒ Ø§Ø³Øª")
+            }
+            user.phone = cleanPhone
+        }
+
+        req.nationalCode?.takeIf { it.isNotBlank() }?.let {
+            user.nationalCode = InputValidator.requireValidNationalCode(it)
+        }
+        req.shebaNumber?.takeIf { it.isNotBlank() }?.let {
+            user.shebaNumber = InputValidator.normalizeSheba(it)
+        }
+        req.avatarUrl?.let { user.avatarUrl = it }
+        req.role?.let { user.role = it }
+        req.email?.let { user.email = it.trim() }
+        req.birthDate?.let { user.birthDate = it.trim() }
+        req.bio?.let { user.bio = it.trim() }
+
+        return userRepository.save(user).toDto()
+    }
+
+    @GetMapping("/{userId}/booths")
+    fun getSellerBooths(@PathVariable userId: Long): List<BoothDto> =
+        boothRepository.findBySellerId(userId).map { it.toDto() }
+
+    @GetMapping("/{userId}/addresses")
+    fun getAddresses(@PathVariable userId: Long): List<AddressDto> =
+        addressRepository.findByUserId(userId)
+            .sortedByDescending { it.isDefault }
+            .map { it.toDto() }
+
+    @PostMapping("/{userId}/addresses")
+    @Transactional
+    fun addAddress(
+        @PathVariable userId: Long,
+        @RequestBody req: CreateAddressRequest
+    ): ResponseEntity<AddressDto> {
+        val user = userRepository.findById(userId).orElseThrow {
+            ResponseStatusException(HttpStatus.NOT_FOUND, "Ú©Ø§Ø±Ø¨Ø± ÛŒØ§ÙØª Ù†Ø´Ø¯")
+        }
+        val cleanTitle = req.title.trim()
+        val cleanCity = InputValidator.requireValidHumanName(req.city, "Ù†Ø§Ù… Ø´Ù‡Ø±")
+        val cleanFull = req.fullAddress.trim()
+        val cleanPostal = InputValidator.requireValidPostalCode(req.postalCode)
+
+        if (cleanTitle.length < 2 || cleanTitle.all { it.isDigit() }) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Ø¹Ù†ÙˆØ§Ù† Ø¢Ø¯Ø±Ø³ Ø¨Ø§ÛŒØ¯ Ù…Ø¹ØªØ¨Ø± Ùˆ Ø´Ø§Ù…Ù„ Ø­Ø±ÙˆÙ Ø¨Ø§Ø´Ø¯")
+        }
+        if (cleanFull.length < 8 || cleanFull.all { it.isDigit() }) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Ù„Ø·ÙØ§Ù‹ Ø¢Ø¯Ø±Ø³ Ú©Ø§Ù…Ù„ Ù¾Ø³ØªÛŒ Ø±Ø§ Ø¨Ø§ Ø¬Ø²Ø¦ÛŒØ§Øª ÙˆØ§Ø±Ø¯ Ú©Ù†ÛŒØ¯")
+        }
+
+        val existingAddresses = addressRepository.findByUserId(userId)
+        val shouldBeDefault = req.isDefault || existingAddresses.isEmpty()
+
+        if (shouldBeDefault) {
+            existingAddresses.forEach {
+                it.isDefault = false
+                addressRepository.save(it)
+            }
+        }
+
+        val saved = addressRepository.save(
+            Address(
+                user = user,
+                title = cleanTitle,
+                city = cleanCity,
+                fullAddress = cleanFull,
+                postalCode = cleanPostal,
+                isDefault = shouldBeDefault
+            )
+        )
+        return ResponseEntity.status(HttpStatus.CREATED).body(saved.toDto())
+    }
+
+    @PutMapping("/{userId}/addresses/{addressId}/default")
+    @Transactional
+    fun setDefaultAddress(
+        @PathVariable userId: Long,
+        @PathVariable addressId: Long
+    ): List<AddressDto> {
+        val addresses = addressRepository.findByUserId(userId)
+        if (addresses.none { it.id == addressId }) {
+            throw ResponseStatusException(HttpStatus.NOT_FOUND, "Ø¢Ø¯Ø±Ø³ Ù…ÙˆØ±Ø¯ Ù†Ø¸Ø± Ø¨Ø±Ø§ÛŒ Ø§ÛŒÙ† Ú©Ø§Ø±Ø¨Ø± ÛŒØ§ÙØª Ù†Ø´Ø¯")
+        }
+        addresses.forEach { addr ->
+            addr.isDefault = (addr.id == addressId)
+            addressRepository.save(addr)
+        }
+        return addresses.sortedByDescending { it.isDefault }.map { it.toDto() }
+    }
+
+    @DeleteMapping("/{userId}/addresses/{addressId}")
+    @Transactional
+    fun deleteAddress(@PathVariable userId: Long, @PathVariable addressId: Long): ResponseEntity<Void> {
+        val addr = addressRepository.findById(addressId).orElseThrow {
+            ResponseStatusException(HttpStatus.NOT_FOUND, "Ø¢Ø¯Ø±Ø³ ÛŒØ§ÙØª Ù†Ø´Ø¯")
+        }
+        if (addr.user.id != userId) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Ø´Ù…Ø§ Ù…Ø¬Ø§Ø² Ø¨Ù‡ Ø­Ø°Ù Ø§ÛŒÙ† Ø¢Ø¯Ø±Ø³ Ù†ÛŒØ³ØªÛŒØ¯")
+        }
+        addressRepository.delete(addr)
+        val remaining = addressRepository.findByUserId(userId)
+        if (addr.isDefault && remaining.isNotEmpty()) {
+            remaining.first().isDefault = true
+            addressRepository.save(remaining.first())
+        }
+        return ResponseEntity.noContent().build()
+    }
+}
+
+internal fun User.toDto() = UserProfileDto(
+    id = id,
+    phone = phone,
+    fullName = fullName,
+    role = role,
+    avatarUrl = avatarUrl,
+    nationalCode = nationalCode,
+    email = email,
+    birthDate = birthDate,
+    shebaNumber = shebaNumber,
+    bio = bio
+)
+
+internal fun Address.toDto() = AddressDto(id, title, city, fullAddress, postalCode, isDefault)
+
+==========================================
+FILE: D:\tsv\b2bb2c\Backend\backend\src\main\kotlin\controller\MarketplaceController.kt
+==========================================
+package com.marketplace.backend.controller
+
+import com.marketplace.backend.model.*
+import com.marketplace.backend.repository.*
+import io.swagger.v3.oas.annotations.Operation
+import io.swagger.v3.oas.annotations.tags.Tag
+import org.springframework.http.HttpStatus
+import org.springframework.http.ResponseEntity
+import org.springframework.transaction.annotation.Transactional
+import org.springframework.web.bind.annotation.*
+import org.springframework.web.server.ResponseStatusException
+import java.math.BigDecimal
+
+data class BannerDto(val id: Long, val title: String, val imageUrl: String, val targetUrl: String?)
+data class CreateBannerRequest(val title: String? = null, val imageUrl: String, val targetUrl: String? = null)
+
+data class CategoryDto(
+    val id: Long,
+    val name: String,
+    val iconUrl: String?,
+    val parentId: Long?,
+    val subCategories: List<CategoryDto> = emptyList()
+)
+
+data class BoothDto(
+    val id: Long,
+    val sellerId: Long,
+    val sellerName: String,
+    val name: String,
+    val description: String?,
+    val type: BoothType,
+    val logoUrl: String?,
+    val bannerUrl: String?,
+    val rating: Double
+)
+
+data class PriceTierDto(
+    val minQuantity: Int,
+    val unitPrice: BigDecimal
+)
+
+data class ProductDto(
+    val id: Long,
+    val boothId: Long,
+    val boothName: String,
+    val boothType: BoothType = BoothType.RETAIL,
+    val categoryId: Long,
+    val categoryName: String,
+    val title: String,
+    val description: String?,
+    val price: BigDecimal,
+    val discountPrice: BigDecimal?,
+    val chinaPrice: BigDecimal? = null,
+    val saleType: SaleType = SaleType.SINGLE,
+    val minOrderQuantity: Int = 1,
+    val warehouseOrigin: WarehouseOrigin = WarehouseOrigin.IRAN,
+    val deliveryTimeRange: String = Product.resolveDeliveryLabel(WarehouseOrigin.IRAN),
+    val priceTiers: List<PriceTierDto> = emptyList(),
+    val stockQuantity: Int,
+    val imageUrl: String?,
+    val isHotDeal: Boolean,
+    val rating: Double
+)
+
+data class VitrineResponse(
+    val mode: String,
+    val welcomeMessage: String,
+    val banners: List<BannerDto>,
+    val rootCategories: List<CategoryDto>,
+    val hotDeals: List<ProductDto>,
+    val recommendedProducts: List<ProductDto>
+)
+
+data class CreateBoothRequest(
+    val sellerId: Long,
+    val name: String,
+    val description: String?,
+    val type: BoothType = BoothType.RETAIL,
+    val logoUrl: String? = null,
+    val bannerUrl: String? = null
+)
+
+data class CreateProductRequest(
+    val categoryId: Long,
+    val title: String,
+    val description: String?,
+    val price: BigDecimal,
+    val discountPrice: BigDecimal? = null,
+    val chinaPrice: BigDecimal? = null,
+    val saleType: SaleType = SaleType.SINGLE,
+    val minOrderQuantity: Int = 1,
+    val warehouseOrigin: WarehouseOrigin = WarehouseOrigin.IRAN,
+    val priceTiers: List<PriceTierDto> = emptyList(),
+    val stockQuantity: Int = 10,
+    val imageUrl: String? = null,
+    val isHotDeal: Boolean = false
+)
+
+data class CartItemDto(
+    val id: Long,
+    val product: ProductDto,
+    val quantity: Int,
+    val appliedUnitPrice: BigDecimal,
+    val lineTotal: BigDecimal
+)
+
+data class CartSummaryDto(
+    val items: List<CartItemDto>,
+    val totalPrice: BigDecimal
+)
+
+data class AddToCartRequest(val productId: Long, val quantity: Int = 1)
+data class CheckoutRequest(val addressId: Long)
+
+data class OrderItemDto(
+    val productId: Long,
+    val productTitle: String,
+    val quantity: Int,
+    val unitPrice: BigDecimal,
+    val saleType: SaleType = SaleType.SINGLE,
+    val warehouseOrigin: WarehouseOrigin = WarehouseOrigin.IRAN,
+    val deliveryTimeRange: String = ""
+)
+
+data class OrderDto(
+    val id: Long,
+    val status: OrderStatus,
+    val totalAmount: BigDecimal,
+    val shippingAddress: String,
+    val createdAt: String,
+    val items: List<OrderItemDto>
+)
+
+/**
+ * Builds the 2-level category tree in O(N) memory from a single query instead of N+1 queries.
+ */
+internal fun CategoryRepository.buildCategoryTree(): List<CategoryDto> {
+    val all = findAll()
+    val childrenByParentId = all.filter { it.parent != null }.groupBy { it.parent!!.id }
+    return all.filter { it.parent == null }.map { root ->
+        CategoryDto(
+            id = root.id,
+            name = root.name,
+            iconUrl = root.iconUrl,
+            parentId = null,
+            subCategories = childrenByParentId[root.id].orEmpty().map { it.toSimpleDto() }
+        )
+    }
+}
+
+@RestController
+@RequestMapping("/api/v1/vitrine")
+@Tag(name = "3. Home Vitrine", description = "Guest Vitrine and Personalized User Feeds")
+class VitrineController(
+    private val bannerRepository: BannerRepository,
+    private val categoryRepository: CategoryRepository,
+    private val productRepository: ProductRepository,
+    private val userRepository: UserRepository,
+    private val wishlistItemRepository: WishlistItemRepository
+) {
+
+    @GetMapping("/guest")
+    @Operation(summary = "Get Guest Home Vitrine")
+    fun getGuestVitrine(): VitrineResponse {
+        val banners = bannerRepository.findByIsActiveTrue().map { it.toDto() }
+        val rootCats = categoryRepository.buildCategoryTree()
+        val hotDeals = productRepository.findByIsHotDealTrue().map { it.toDto() }
+        val latest = productRepository.findAll().takeLast(12).map { it.toDto() }
+
+        return VitrineResponse(
+            mode = "GUEST",
+            welcomeMessage = "Ù‡Ø±Ù…Ø³",
+            banners = banners,
+            rootCategories = rootCats,
+            hotDeals = hotDeals,
+            recommendedProducts = latest
+        )
+    }
+
+    @GetMapping("/personalized/{userId}")
+    @Operation(summary = "Get Personalized Home Vitrine tailored to logged-in user")
+    fun getPersonalizedVitrine(@PathVariable userId: Long): VitrineResponse {
+        val user = userRepository.findById(userId).orElseThrow {
+            ResponseStatusException(HttpStatus.NOT_FOUND, "Ú©Ø§Ø±Ø¨Ø± ÛŒØ§ÙØª Ù†Ø´Ø¯")
+        }
+        val banners = bannerRepository.findByIsActiveTrue().map { it.toDto() }
+        val rootCats = categoryRepository.buildCategoryTree()
+        val hotDeals = productRepository.findByIsHotDealTrue().map { it.toDto() }
+
+        val wishedCategories = wishlistItemRepository.findByUserId(userId)
+            .map { it.product.category.id }
+            .toSet()
+
+        val allProducts = productRepository.findAll()
+        val tailored = if (wishedCategories.isNotEmpty()) {
+            allProducts.sortedByDescending { wishedCategories.contains(it.category.id) }
+        } else {
+            allProducts
+        }.map { it.toDto() }
+
+        return VitrineResponse(
+            mode = "PERSONALIZED",
+            welcomeMessage = "Ø³Ù„Ø§Ù… ${user.fullName} Ø¹Ø²ÛŒØ²",
+            banners = banners,
+            rootCategories = rootCats,
+            hotDeals = hotDeals,
+            recommendedProducts = tailored
+        )
+    }
+}
+
+@RestController
+@RequestMapping("/api/v1")
+@Tag(name = "4. Categories, Banners & Search", description = "Categories, Banners, and Search (with MOQ & Warehouse Filters)")
+class CategoryAndSearchController(
+    private val categoryRepository: CategoryRepository,
+    private val productRepository: ProductRepository,
+    private val bannerRepository: BannerRepository
+) {
+
+    @GetMapping("/banners")
+    fun getBanners(): List<BannerDto> = bannerRepository.findByIsActiveTrue().map { it.toDto() }
+
+    @PostMapping("/banners")
+    @Operation(summary = "Add a new Homepage Ad Banner")
+    fun createBanner(@RequestBody req: CreateBannerRequest): ResponseEntity<BannerDto> {
+        val cleanTitle = req.title?.trim().orEmpty()
+        val cleanImage = req.imageUrl.trim()
+        if (cleanTitle.isBlank() && cleanImage.isBlank()) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "ØªØµÙˆÛŒØ± ÛŒØ§ Ù…ØªÙ† Ø¨Ù†Ø± Ø§Ù„Ø²Ø§Ù…ÛŒ Ø§Ø³Øª")
+        }
+        val saved = bannerRepository.save(
+            Banner(
+                title = cleanTitle,
+                imageUrl = cleanImage,
+                targetUrl = req.targetUrl,
+                isActive = true
+            )
+        )
+        return ResponseEntity.status(HttpStatus.CREATED).body(saved.toDto())
+    }
+
+    @DeleteMapping("/banners/{bannerId}")
+    @Operation(summary = "Delete an Ad Banner")
+    fun deleteBanner(@PathVariable bannerId: Long): ResponseEntity<Void> {
+        if (bannerRepository.existsById(bannerId)) {
+            bannerRepository.deleteById(bannerId)
+        }
+        return ResponseEntity.noContent().build()
+    }
+
+    @GetMapping("/categories")
+    @Operation(summary = "Get full hierarchical category tree")
+    fun getCategories(): List<CategoryDto> = categoryRepository.buildCategoryTree()
+
+    @GetMapping("/categories/{categoryId}/products")
+    @Operation(summary = "Get products inside a category or subcategory")
+    fun getProductsByCategory(@PathVariable categoryId: Long): List<ProductDto> {
+        val subIds = categoryRepository.findByParentId(categoryId).map { it.id }.toSet()
+        val targetIds = subIds + categoryId
+        return productRepository.findAll()
+            .filter { targetIds.contains(it.category.id) || it.category.parent?.id == categoryId }
+            .map { it.toDto() }
+    }
+
+    @GetMapping("/products/search")
+    @Operation(summary = "Search and filter products by keyword, category, price, saleType (SINGLE/MOQ), or warehouseOrigin (IRAN/CHINA)")
+    fun searchProducts(
+        @RequestParam(required = false) q: String?,
+        @RequestParam(required = false) categoryId: Long?,
+        @RequestParam(required = false) minPrice: BigDecimal?,
+        @RequestParam(required = false) maxPrice: BigDecimal?,
+        @RequestParam(required = false) onlyHotDeals: Boolean?,
+        @RequestParam(required = false) saleType: SaleType?,
+        @RequestParam(required = false) warehouseOrigin: WarehouseOrigin?
+    ): List<ProductDto> {
+        return productRepository.findAll()
+            .filter { p ->
+                val matchesQuery = q.isNullOrBlank() ||
+                        p.title.contains(q, ignoreCase = true) ||
+                        p.category.name.contains(q, ignoreCase = true) ||
+                        (p.description?.contains(q, ignoreCase = true) == true)
+                val matchesCat = categoryId == null || p.category.id == categoryId || p.category.parent?.id == categoryId
+                val effectivePrice = p.effectiveBasePrice()
+                val matchesMin = minPrice == null || effectivePrice >= minPrice
+                val matchesMax = maxPrice == null || effectivePrice <= maxPrice
+                val matchesHot = onlyHotDeals != true || p.isHotDeal
+                val matchesSaleType = saleType == null || p.saleType == saleType
+                val matchesOrigin = warehouseOrigin == null || p.warehouseOrigin == warehouseOrigin
+
+                matchesQuery && matchesCat && matchesMin && matchesMax && matchesHot && matchesSaleType && matchesOrigin
+            }
+            .map { it.toDto() }
+    }
+}
+
+@RestController
+@RequestMapping("/api/v1")
+@Tag(name = "5. Retail & Supplier Booths & Products", description = "Retail & MOQ Supplier Booths, Single (Iran/China) & MOQ Products CRUD")
+class BoothAndProductController(
+    private val boothRepository: BoothRepository,
+    private val productRepository: ProductRepository,
+    private val userRepository: UserRepository,
+    private val categoryRepository: CategoryRepository,
+    private val cartItemRepository: CartItemRepository,
+    private val wishlistItemRepository: WishlistItemRepository,
+    private val orderItemRepository: OrderItemRepository
+) {
+
+    @GetMapping("/booths")
+    fun getAllBooths(@RequestParam(required = false) type: BoothType?): List<BoothDto> {
+        val list = if (type != null) boothRepository.findByType(type) else boothRepository.findAll()
+        return list.map { it.toDto() }
+    }
+
+    @GetMapping("/booths/{boothId}")
+    fun getBooth(@PathVariable boothId: Long): BoothDto {
+        val booth = boothRepository.findById(boothId).orElseThrow {
+            ResponseStatusException(HttpStatus.NOT_FOUND, "ØºØ±ÙÙ‡ ÛŒØ§ÙØª Ù†Ø´Ø¯")
+        }
+        return booth.toDto()
+    }
+
+    @GetMapping("/booths/{boothId}/products")
+    fun getBoothProducts(@PathVariable boothId: Long): List<ProductDto> =
+        productRepository.findByBoothId(boothId).map { it.toDto() }
+
+    @PostMapping("/booths")
+    @Transactional
+    @Operation(summary = "Create a RETAIL or SUPPLIER (MOQ) Booth")
+    fun createBooth(@RequestBody req: CreateBoothRequest): ResponseEntity<BoothDto> {
+        if (req.name.isBlank()) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Ù†Ø§Ù… ØºØ±ÙÙ‡ Ø§Ù„Ø²Ø§Ù…ÛŒ Ø§Ø³Øª")
+        }
+        val seller = userRepository.findById(req.sellerId).orElseThrow {
+            ResponseStatusException(HttpStatus.NOT_FOUND, "ÙØ±ÙˆØ´Ù†Ø¯Ù‡ ÛŒØ§ÙØª Ù†Ø´Ø¯")
+        }
+        if (seller.role == UserRole.BUYER) {
+            seller.role = UserRole.SELLER
+            userRepository.save(seller)
+        }
+        val saved = boothRepository.save(
+            Booth(
+                seller = seller,
+                name = req.name.trim(),
+                description = req.description?.trim(),
+                type = req.type,
+                logoUrl = req.logoUrl,
+                bannerUrl = req.bannerUrl
+            )
+        )
+        return ResponseEntity.status(HttpStatus.CREATED).body(saved.toDto())
+    }
+
+    private fun applyProductAttributes(product: Product, req: CreateProductRequest) {
+        val effectiveMinQty = if (req.saleType == SaleType.MOQ) req.minOrderQuantity.coerceAtLeast(2) else 1
+        val validDiscount = req.discountPrice?.takeIf { it > BigDecimal.ZERO && it < req.price }
+        val validChinaPrice = if (req.warehouseOrigin == WarehouseOrigin.CHINA) {
+            req.chinaPrice?.takeIf { it > BigDecimal.ZERO && it < req.price } ?: validDiscount
+        } else null
+
+        product.title = req.title.trim()
+        product.description = req.description?.trim()
+        product.price = req.price
+        product.discountPrice = validDiscount
+        product.chinaPrice = validChinaPrice
+        product.saleType = req.saleType
+        product.minOrderQuantity = effectiveMinQty
+        product.warehouseOrigin = req.warehouseOrigin
+        product.deliveryTimeRange = Product.resolveDeliveryLabel(req.warehouseOrigin)
+        product.stockQuantity = req.stockQuantity.coerceAtLeast(effectiveMinQty)
+        if (!req.imageUrl.isNullOrBlank()) {
+            product.imageUrl = req.imageUrl.trim()
+        }
+        product.isHotDeal = req.isHotDeal
+        product.replacePriceTiers(req.priceTiers.map { it.minQuantity to it.unitPrice })
+    }
+
+    @PostMapping("/booths/{boothId}/products")
+    @Transactional
+    @Operation(summary = "Add a SINGLE (Iran Ready / China 50-90 Days) or MOQ Wholesale Product to a Booth")
+    fun addProductToBooth(
+        @PathVariable boothId: Long,
+        @RequestBody req: CreateProductRequest
+    ): ResponseEntity<ProductDto> {
+        if (req.title.isBlank() || req.price <= BigDecimal.ZERO) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Ù†Ø§Ù… Ù…Ø­ØµÙˆÙ„ Ùˆ Ù‚ÛŒÙ…Øª Ù…Ø¹ØªØ¨Ø± Ø§Ù„Ø²Ø§Ù…ÛŒ Ø§Ø³Øª")
+        }
+        val booth = boothRepository.findById(boothId).orElseGet {
+            boothRepository.findAll().firstOrNull()
+                ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "ØºØ±ÙÙ‡ ÛŒØ§ÙØª Ù†Ø´Ø¯")
+        }
+        val category = categoryRepository.findById(req.categoryId).orElseGet {
+            categoryRepository.findAll().firstOrNull()
+                ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "Ø¯Ø³ØªÙ‡â€ŒØ¨Ù†Ø¯ÛŒ ÛŒØ§ÙØª Ù†Ø´Ø¯")
+        }
+
+        if (req.saleType == SaleType.MOQ && booth.type == BoothType.RETAIL) {
+            booth.type = BoothType.SUPPLIER
+            boothRepository.save(booth)
+        }
+
+        val product = Product(
+            booth = booth,
+            category = category,
+            title = req.title.trim(),
+            price = req.price
+        )
+        applyProductAttributes(product, req)
+
+        val saved = productRepository.save(product)
+        return ResponseEntity.status(HttpStatus.CREATED).body(saved.toDto())
+    }
+
+    @PutMapping("/products/{productId}")
+    @Transactional
+    @Operation(summary = "Update an existing SINGLE or MOQ product")
+    fun updateProduct(
+        @PathVariable productId: Long,
+        @RequestBody req: CreateProductRequest
+    ): ProductDto {
+        if (req.title.isBlank() || req.price <= BigDecimal.ZERO) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Ù†Ø§Ù… Ù…Ø­ØµÙˆÙ„ Ùˆ Ù‚ÛŒÙ…Øª Ù…Ø¹ØªØ¨Ø± Ø§Ù„Ø²Ø§Ù…ÛŒ Ø§Ø³Øª")
+        }
+        val product = productRepository.findById(productId).orElseThrow {
+            ResponseStatusException(HttpStatus.NOT_FOUND, "Ù…Ø­ØµÙˆÙ„ ÛŒØ§ÙØª Ù†Ø´Ø¯")
+        }
+        categoryRepository.findById(req.categoryId).ifPresent { product.category = it }
+        applyProductAttributes(product, req)
+
+        return productRepository.save(product).toDto()
+    }
+
+    @GetMapping("/products/{productId}")
+    fun getProductDetails(@PathVariable productId: Long): ProductDto {
+        val product = productRepository.findById(productId).orElseThrow {
+            ResponseStatusException(HttpStatus.NOT_FOUND, "Ù…Ø­ØµÙˆÙ„ ÛŒØ§ÙØª Ù†Ø´Ø¯")
+        }
+        return product.toDto()
+    }
+
+    @DeleteMapping("/products/{productId}")
+    @Transactional
+    @Operation(summary = "Delete a product safely across all relations (Admin / Seller)")
+    fun deleteProduct(@PathVariable productId: Long): ResponseEntity<Void> {
+        if (productRepository.existsById(productId)) {
+            cartItemRepository.deleteByProductId(productId)
+            wishlistItemRepository.deleteByProductId(productId)
+            orderItemRepository.deleteByProductId(productId)
+            productRepository.deleteById(productId)
+        }
+        return ResponseEntity.noContent().build()
+    }
+}
+
+@RestController
+@RequestMapping("/api/v1/users/{userId}")
+@Tag(name = "6. Cart, Wishlist & Checkout", description = "Shopping cart (with MOQ & China/Iran pricing), wishlist, and order checkout")
+class CartAndOrderController(
+    private val userRepository: UserRepository,
+    private val productRepository: ProductRepository,
+    private val addressRepository: AddressRepository,
+    private val cartItemRepository: CartItemRepository,
+    private val wishlistItemRepository: WishlistItemRepository,
+    private val orderRepository: OrderRepository,
+    private val orderItemRepository: OrderItemRepository
+) {
+
+    @GetMapping("/cart")
+    fun getCart(@PathVariable userId: Long): CartSummaryDto {
+        val items = cartItemRepository.findByUserId(userId).map { item ->
+            val unitPrice = item.product.resolveUnitPrice(item.quantity)
+            CartItemDto(
+                id = item.id,
+                product = item.product.toDto(),
+                quantity = item.quantity,
+                appliedUnitPrice = unitPrice,
+                lineTotal = unitPrice.multiply(BigDecimal(item.quantity))
+            )
+        }
+        val total = items.fold(BigDecimal.ZERO) { acc, item -> acc.add(item.lineTotal) }
+        return CartSummaryDto(items = items, totalPrice = total)
+    }
+
+    @PostMapping("/cart")
+    @Transactional
+    fun addToCart(
+        @PathVariable userId: Long,
+        @RequestBody req: AddToCartRequest
+    ): CartSummaryDto {
+        val user = userRepository.findById(userId).orElseThrow {
+            ResponseStatusException(HttpStatus.NOT_FOUND, "Ú©Ø§Ø±Ø¨Ø± ÛŒØ§ÙØª Ù†Ø´Ø¯")
+        }
+        val product = productRepository.findById(req.productId).orElseThrow {
+            ResponseStatusException(HttpStatus.NOT_FOUND, "Ù…Ø­ØµÙˆÙ„ ÛŒØ§ÙØª Ù†Ø´Ø¯")
+        }
+
+        val minRequired = if (product.saleType == SaleType.MOQ) product.minOrderQuantity.coerceAtLeast(2) else 1
+        val existing = cartItemRepository.findByUserIdAndProductId(userId, req.productId)
+
+        if (existing != null) {
+            val newQty = existing.quantity + req.quantity
+            if (newQty <= 0 || (req.quantity < 0 && newQty < minRequired)) {
+                cartItemRepository.delete(existing)
+            } else {
+                val enforcedQty = newQty.coerceAtLeast(minRequired)
+                if (enforcedQty > product.stockQuantity) {
+                    throw ResponseStatusException(
+                        HttpStatus.BAD_REQUEST,
+                        "ØªØ¹Ø¯Ø§Ø¯ Ø¯Ø±Ø®ÙˆØ§Ø³ØªÛŒ Ø¨ÛŒØ´ØªØ± Ø§Ø² Ù…ÙˆØ¬ÙˆØ¯ÛŒ Ø§Ù†Ø¨Ø§Ø± (${product.stockQuantity} Ø¹Ø¯Ø¯) Ø§Ø³Øª"
+                    )
+                }
+                existing.quantity = enforcedQty
+                cartItemRepository.save(existing)
+            }
+        } else if (req.quantity > 0) {
+            val initialQty = req.quantity.coerceAtLeast(minRequired)
+            if (product.stockQuantity < initialQty) {
+                throw ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Ù…ÙˆØ¬ÙˆØ¯ÛŒ Ø§Ù†Ø¨Ø§Ø± Ø¨Ø±Ø§ÛŒ Ø­Ø¯Ø§Ù‚Ù„ Ø³ÙØ§Ø±Ø´ (${minRequired} Ø¹Ø¯Ø¯) Ú©Ø§ÙÛŒ Ù†ÛŒØ³Øª"
+                )
+            }
+            cartItemRepository.save(CartItem(user = user, product = product, quantity = initialQty))
+        }
+        return getCart(userId)
+    }
+
+    @DeleteMapping("/cart/{productId}")
+    @Transactional
+    fun removeFromCart(@PathVariable userId: Long, @PathVariable productId: Long): CartSummaryDto {
+        cartItemRepository.findByUserIdAndProductId(userId, productId)?.let {
+            cartItemRepository.delete(it)
+        }
+        return getCart(userId)
+    }
+
+    @GetMapping("/wishlist")
+    fun getWishlist(@PathVariable userId: Long): List<ProductDto> =
+        wishlistItemRepository.findByUserId(userId).map { it.product.toDto() }
+
+    @PostMapping("/wishlist/{productId}")
+    @Transactional
+    fun addToWishlist(@PathVariable userId: Long, @PathVariable productId: Long): List<ProductDto> {
+        val user = userRepository.findById(userId).orElseThrow {
+            ResponseStatusException(HttpStatus.NOT_FOUND, "Ú©Ø§Ø±Ø¨Ø± ÛŒØ§ÙØª Ù†Ø´Ø¯")
+        }
+        val product = productRepository.findById(productId).orElseThrow {
+            ResponseStatusException(HttpStatus.NOT_FOUND, "Ù…Ø­ØµÙˆÙ„ ÛŒØ§ÙØª Ù†Ø´Ø¯")
+        }
+        if (wishlistItemRepository.findByUserIdAndProductId(userId, productId) == null) {
+            wishlistItemRepository.save(WishlistItem(user = user, product = product))
+        }
+        return getWishlist(userId)
+    }
+
+    @DeleteMapping("/wishlist/{productId}")
+    @Transactional
+    fun removeFromWishlist(@PathVariable userId: Long, @PathVariable productId: Long): List<ProductDto> {
+        wishlistItemRepository.findByUserIdAndProductId(userId, productId)?.let {
+            wishlistItemRepository.delete(it)
+        }
+        return getWishlist(userId)
+    }
+
+    @PostMapping("/orders/checkout")
+    @Transactional
+    fun checkout(
+        @PathVariable userId: Long,
+        @RequestBody req: CheckoutRequest
+    ): ResponseEntity<OrderDto> {
+        val user = userRepository.findById(userId).orElseThrow {
+            ResponseStatusException(HttpStatus.NOT_FOUND, "Ú©Ø§Ø±Ø¨Ø± ÛŒØ§ÙØª Ù†Ø´Ø¯")
+        }
+        val address = addressRepository.findById(req.addressId).orElseThrow {
+            ResponseStatusException(HttpStatus.NOT_FOUND, "Ø¢Ø¯Ø±Ø³ Ø§Ø±Ø³Ø§Ù„ ÛŒØ§ÙØª Ù†Ø´Ø¯")
+        }
+        if (address.user.id != userId) {
+            throw ResponseStatusException(HttpStatus.FORBIDDEN, "Ø¢Ø¯Ø±Ø³ Ø§Ù†ØªØ®Ø§Ø¨ Ø´Ø¯Ù‡ Ù…ØªØ¹Ù„Ù‚ Ø¨Ù‡ Ø­Ø³Ø§Ø¨ Ø´Ù…Ø§ Ù†ÛŒØ³Øª")
+        }
+        val cartItems = cartItemRepository.findByUserId(userId)
+        if (cartItems.isEmpty()) {
+            throw ResponseStatusException(HttpStatus.BAD_REQUEST, "Ø³Ø¨Ø¯ Ø®Ø±ÛŒØ¯ Ø´Ù…Ø§ Ø®Ø§Ù„ÛŒ Ø§Ø³Øª")
+        }
+
+        for (item in cartItems) {
+            val minReq = if (item.product.saleType == SaleType.MOQ) item.product.minOrderQuantity else 1
+            if (item.quantity < minReq) {
+                throw ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Ø­Ø¯Ø§Ù‚Ù„ ØªØ¹Ø¯Ø§Ø¯ Ø³ÙØ§Ø±Ø´ Ø¹Ù…Ø¯Ù‡ (MOQ) Ø¨Ø±Ø§ÛŒ Ù…Ø­ØµÙˆÙ„ Â«${item.product.title}Â» Ø¨Ø±Ø§Ø¨Ø± Ø¨Ø§ $minReq Ø¹Ø¯Ø¯ Ø§Ø³Øª"
+                )
+            }
+            if (item.quantity <= 0 || item.quantity > item.product.stockQuantity) {
+                throw ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Ù…ÙˆØ¬ÙˆØ¯ÛŒ Ù…Ø­ØµÙˆÙ„ Â«${item.product.title}Â» Ú©Ø§ÙÛŒ Ù†ÛŒØ³Øª (Ù…ÙˆØ¬ÙˆØ¯ÛŒ: ${item.product.stockQuantity})"
+                )
+            }
+            item.product.stockQuantity -= item.quantity
+            productRepository.save(item.product)
+        }
+
+        val total = cartItems.fold(BigDecimal.ZERO) { acc, item ->
+            val unitPrice = item.product.resolveUnitPrice(item.quantity)
+            acc.add(unitPrice.multiply(BigDecimal(item.quantity)))
+        }
+
+        val savedOrder = orderRepository.save(
+            Order(user = user, shippingAddress = address, totalAmount = total, status = OrderStatus.PAID)
+        )
+
+        val savedItems = cartItems.map { item ->
+            val unitPrice = item.product.resolveUnitPrice(item.quantity)
+            orderItemRepository.save(
+                OrderItem(
+                    order = savedOrder,
+                    product = item.product,
+                    quantity = item.quantity,
+                    unitPrice = unitPrice
+                )
+            )
+        }
+
+        cartItemRepository.deleteByUserId(userId)
+
+        return ResponseEntity.status(HttpStatus.CREATED).body(savedOrder.toDto(savedItems))
+    }
+
+    @GetMapping("/orders")
+    fun getOrders(@PathVariable userId: Long): List<OrderDto> =
+        orderRepository.findByUserIdOrderByCreatedAtDesc(userId).map { order ->
+            val items = orderItemRepository.findByOrderId(order.id)
+            order.toDto(items)
+        }
+}
+
+internal fun Banner.toDto() = BannerDto(id, title, imageUrl, targetUrl)
+internal fun Category.toSimpleDto() = CategoryDto(id, name, iconUrl, parent?.id)
+internal fun Booth.toDto() = BoothDto(id, seller.id, seller.fullName, name, description, type, logoUrl, bannerUrl, rating)
+internal fun Product.toDto(): ProductDto = ProductDto(
+    id = id,
+    boothId = booth.id,
+    boothName = booth.name,
+    boothType = booth.type,
+    categoryId = category.id,
+    categoryName = category.name,
+    title = title,
+    description = description,
+    price = price,
+    discountPrice = discountPrice,
+    chinaPrice = chinaPrice,
+    saleType = saleType,
+    minOrderQuantity = minOrderQuantity,
+    warehouseOrigin = warehouseOrigin,
+    deliveryTimeRange = deliveryTimeRange,
+    priceTiers = priceTiers.sortedBy { it.minQuantity }.map { PriceTierDto(it.minQuantity, it.unitPrice) },
+    stockQuantity = stockQuantity,
+    imageUrl = imageUrl,
+    isHotDeal = isHotDeal,
+    rating = rating
+)
+
+internal fun Order.toDto(items: List<OrderItem>) = OrderDto(
+    id = id,
+    status = status,
+    totalAmount = totalAmount,
+    shippingAddress = "${shippingAddress.city}ØŒ ${shippingAddress.fullAddress}",
+    createdAt = createdAt.toString().substringBefore("T"),
+    items = items.map {
+        OrderItemDto(
+            productId = it.product.id,
+            productTitle = it.product.title,
+            quantity = it.quantity,
+            unitPrice = it.unitPrice,
+            saleType = it.product.saleType,
+            warehouseOrigin = it.product.warehouseOrigin,
+            deliveryTimeRange = it.product.deliveryTimeRange
+        )
+    }
+)
+
+==========================================
+FILE: D:\tsv\b2bb2c\Backend\backend\src\main\kotlin\model\Entities.kt
+==========================================
+package com.marketplace.backend.model
+
+import jakarta.persistence.*
+import java.math.BigDecimal
+import java.time.LocalDateTime
+
+enum class UserRole {
+    BUYER, SELLER, ADMIN
+}
+
+enum class BoothType {
+    RETAIL,
+    SUPPLIER,
+    PRODUCTION
+}
+
+enum class SaleType {
+    SINGLE,
+    MOQ
+}
+
+enum class WarehouseOrigin {
+    IRAN,
+    CHINA
+}
+
+enum class OrderStatus {
+    PENDING, PAID, SHIPPED, DELIVERED, CANCELLED
+}
+
+@Entity
+@Table(name = "users")
+class User(
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long = 0,
+
+    @Column(nullable = false, unique = true, length = 15)
+    var phone: String,
+
+    @Column(nullable = false, length = 120)
+    var fullName: String,
+
+    @Column(nullable = false, length = 120)
+    var password: String,
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 20)
+    var role: UserRole = UserRole.BUYER,
+
+    @Column(columnDefinition = "TEXT")
+    var avatarUrl: String? = null,
+
+    @Column(length = 10)
+    var nationalCode: String? = null,
+
+    @Column(length = 120)
+    var email: String? = null,
+
+    @Column(length = 20)
+    var birthDate: String? = null,
+
+    @Column(length = 34)
+    var shebaNumber: String? = null,
+
+    @Column(columnDefinition = "TEXT")
+    var bio: String? = null,
+
+    val createdAt: LocalDateTime = LocalDateTime.now()
+)
+
+@Entity
+@Table(name = "addresses")
+class Address(
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long = 0,
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id", nullable = false)
+    val user: User,
+
+    @Column(nullable = false, length = 80)
+    var title: String,
+
+    @Column(nullable = false, length = 80)
+    var city: String,
+
+    @Column(nullable = false, length = 500)
+    var fullAddress: String,
+
+    @Column(nullable = false, length = 20)
+    var postalCode: String,
+
+    var isDefault: Boolean = false
+)
+
+@Entity
+@Table(name = "categories")
+class Category(
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long = 0,
+
+    @Column(nullable = false, length = 100)
+    var name: String,
+
+    @Column(columnDefinition = "TEXT")
+    var iconUrl: String? = null,
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "parent_id")
+    var parent: Category? = null
+)
+
+@Entity
+@Table(name = "booths")
+class Booth(
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long = 0,
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "seller_id", nullable = false)
+    val seller: User,
+
+    @Column(nullable = false, length = 150)
+    var name: String,
+
+    @Column(columnDefinition = "TEXT")
+    var description: String? = null,
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 20)
+    var type: BoothType = BoothType.RETAIL,
+
+    @Column(columnDefinition = "TEXT")
+    var logoUrl: String? = null,
+
+    @Column(columnDefinition = "TEXT")
+    var bannerUrl: String? = null,
+
+    var rating: Double = 5.0,
+    val createdAt: LocalDateTime = LocalDateTime.now()
+)
+
+@Entity
+@Table(name = "products")
+class Product(
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long = 0,
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "booth_id", nullable = false)
+    val booth: Booth,
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "category_id", nullable = false)
+    var category: Category,
+
+    @Column(nullable = false, length = 300)
+    var title: String,
+
+    @Column(columnDefinition = "TEXT")
+    var description: String? = null,
+
+    @Column(nullable = false, precision = 18, scale = 0)
+    var price: BigDecimal,
+
+    @Column(precision = 18, scale = 0)
+    var discountPrice: BigDecimal? = null,
+
+    @Column(precision = 18, scale = 0)
+    var chinaPrice: BigDecimal? = null,
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 20)
+    var saleType: SaleType = SaleType.SINGLE,
+
+    @Column(nullable = false)
+    var minOrderQuantity: Int = 1,
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 20)
+    var warehouseOrigin: WarehouseOrigin = WarehouseOrigin.IRAN,
+
+    @Column(nullable = false, length = 120)
+    var deliveryTimeRange: String = resolveDeliveryLabel(WarehouseOrigin.IRAN),
+
+    @Column(nullable = false)
+    var stockQuantity: Int = 10,
+
+    @Column(columnDefinition = "TEXT")
+    var imageUrl: String? = null,
+
+    var isHotDeal: Boolean = false,
+
+    var rating: Double = 5.0,
+
+    @OneToMany(mappedBy = "product", cascade = [CascadeType.ALL], orphanRemoval = true, fetch = FetchType.EAGER)
+    val priceTiers: MutableList<PriceTier> = mutableListOf(),
+
+    val createdAt: LocalDateTime = LocalDateTime.now()
+) {
+    fun effectiveBasePrice(): BigDecimal = when {
+        warehouseOrigin == WarehouseOrigin.CHINA && chinaPrice != null && chinaPrice!! > BigDecimal.ZERO -> chinaPrice!!
+        discountPrice != null && discountPrice!! > BigDecimal.ZERO -> discountPrice!!
+        else -> price
+    }
+
+    fun resolveUnitPrice(quantity: Int): BigDecimal {
+        if (saleType == SaleType.MOQ && priceTiers.isNotEmpty()) {
+            val matchedTier = priceTiers
+                .sortedBy { it.minQuantity }
+                .lastOrNull { quantity >= it.minQuantity }
+            if (matchedTier != null) return matchedTier.unitPrice
+        }
+        return effectiveBasePrice()
+    }
+
+    fun replacePriceTiers(newTiers: List<Pair<Int, BigDecimal>>) {
+        priceTiers.clear()
+        if (saleType == SaleType.MOQ) {
+            newTiers
+                .filter { (minQty, unitPrice) -> minQty >= minOrderQuantity && unitPrice > BigDecimal.ZERO }
+                .sortedBy { it.first }
+                .distinctBy { it.first }
+                .forEach { (minQty, unitPrice) ->
+                    priceTiers.add(PriceTier(product = this, minQuantity = minQty, unitPrice = unitPrice))
+                }
+        }
+    }
+
+    companion object {
+        fun resolveDeliveryLabel(origin: WarehouseOrigin): String = when (origin) {
+            WarehouseOrigin.IRAN -> "Ø¢Ù…Ø§Ø¯Ù‡ Ø§Ø±Ø³Ø§Ù„ Ø§Ø² Ø§Ù†Ø¨Ø§Ø± Ø§ÛŒØ±Ø§Ù† (Û± ØªØ§ Û³ Ø±ÙˆØ² Ú©Ø§Ø±ÛŒ)"
+            WarehouseOrigin.CHINA -> "Ø§Ø±Ø³Ø§Ù„ Ù…Ø³ØªÙ‚ÛŒÙ… Ø§Ø² Ø§Ù†Ø¨Ø§Ø± Ú†ÛŒÙ† Ø¨Ù‡ Ø§ÛŒØ±Ø§Ù† (ÛµÛ° ØªØ§ Û¹Û° Ø±ÙˆØ² Ú©Ø§Ø±ÛŒ - Ù‚ÛŒÙ…Øª Ø§Ù‚ØªØµØ§Ø¯ÛŒ)"
+        }
+    }
+}
+
+@Entity
+@Table(name = "product_price_tiers")
+class PriceTier(
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long = 0,
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "product_id", nullable = false)
+    val product: Product,
+
+    @Column(nullable = false)
+    var minQuantity: Int,
+
+    @Column(nullable = false, precision = 18, scale = 0)
+    var unitPrice: BigDecimal
+)
+
+@Entity
+@Table(name = "banners")
+class Banner(
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long = 0,
+
+    @Column(nullable = false, length = 300)
+    var title: String,
+
+    @Column(nullable = false, columnDefinition = "TEXT")
+    var imageUrl: String,
+
+    @Column(columnDefinition = "TEXT")
+    var targetUrl: String? = null,
+    var isActive: Boolean = true
+)
+
+@Entity
+@Table(
+    name = "cart_items",
+    uniqueConstraints = [UniqueConstraint(columnNames = ["user_id", "product_id"])]
+)
+class CartItem(
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long = 0,
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id", nullable = false)
+    val user: User,
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "product_id", nullable = false)
+    val product: Product,
+
+    @Column(nullable = false)
+    var quantity: Int = 1
+)
+
+@Entity
+@Table(
+    name = "wishlist_items",
+    uniqueConstraints = [UniqueConstraint(columnNames = ["user_id", "product_id"])]
+)
+class WishlistItem(
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long = 0,
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id", nullable = false)
+    val user: User,
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "product_id", nullable = false)
+    val product: Product,
+
+    val addedAt: LocalDateTime = LocalDateTime.now()
+)
+
+@Entity
+@Table(name = "orders")
+class Order(
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long = 0,
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "user_id", nullable = false)
+    val user: User,
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "address_id", nullable = false)
+    val shippingAddress: Address,
+
+    @Column(nullable = false, precision = 18, scale = 0)
+    var totalAmount: BigDecimal,
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false, length = 20)
+    var status: OrderStatus = OrderStatus.PAID,
+
+    val createdAt: LocalDateTime = LocalDateTime.now()
+)
+
+@Entity
+@Table(name = "order_items")
+class OrderItem(
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long = 0,
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "order_id", nullable = false)
+    val order: Order,
+
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "product_id", nullable = false)
+    val product: Product,
+
+    @Column(nullable = false)
+    val quantity: Int,
+
+    @Column(nullable = false, precision = 18, scale = 0)
+    val unitPrice: BigDecimal
+)
+
+==========================================
+FILE: D:\tsv\b2bb2c\Backend\backend\src\main\kotlin\repository\Repositories.kt
+==========================================
+package com.marketplace.backend.repository
+
+import com.marketplace.backend.model.*
+import org.springframework.data.jpa.repository.JpaRepository
+import org.springframework.transaction.annotation.Transactional
+
+interface UserRepository : JpaRepository<User, Long> {
+    fun findByPhone(phone: String): User?
+    fun existsByPhone(phone: String): Boolean
+}
+
+interface AddressRepository : JpaRepository<Address, Long> {
+    fun findByUserId(userId: Long): List<Address>
+}
+
+interface CategoryRepository : JpaRepository<Category, Long> {
+    fun findByParentIsNull(): List<Category>
+    fun findByParentId(parentId: Long): List<Category>
+}
+
+interface BoothRepository : JpaRepository<Booth, Long> {
+    fun findBySellerId(sellerId: Long): List<Booth>
+    fun findByType(type: BoothType): List<Booth>
+}
+
+interface ProductRepository : JpaRepository<Product, Long> {
+    fun findByIsHotDealTrue(): List<Product>
+    fun findByCategoryId(categoryId: Long): List<Product>
+    fun findByBoothId(boothId: Long): List<Product>
+}
+
+interface BannerRepository : JpaRepository<Banner, Long> {
+    fun findByIsActiveTrue(): List<Banner>
+}
+
+interface CartItemRepository : JpaRepository<CartItem, Long> {
+    fun findByUserId(userId: Long): List<CartItem>
+    fun findByUserIdAndProductId(userId: Long, productId: Long): CartItem?
+    @Transactional
+    fun deleteByUserId(userId: Long)
+    @Transactional
+    fun deleteByProductId(productId: Long)
+}
+
+interface WishlistItemRepository : JpaRepository<WishlistItem, Long> {
+    fun findByUserId(userId: Long): List<WishlistItem>
+    fun findByUserIdAndProductId(userId: Long, productId: Long): WishlistItem?
+    @Transactional
+    fun deleteByProductId(productId: Long)
+}
+
+interface OrderRepository : JpaRepository<Order, Long> {
+    fun findByUserIdOrderByCreatedAtDesc(userId: Long): List<Order>
+}
+
+interface OrderItemRepository : JpaRepository<OrderItem, Long> {
+    fun findByOrderId(orderId: Long): List<OrderItem>
+    @Transactional
+    fun deleteByProductId(productId: Long)
+}
+
+==========================================
+FILE: D:\tsv\b2bb2c\Backend\backend\src\main\resources\application.yaml
+==========================================
+server:
+  port: 8080
+  address: 0.0.0.0
+
+spring:
+  application:
+    name: backend
+
+  datasource:
+    url: jdbc:postgresql://localhost:5432/marketplace_db
+    username: postgres
+    password: 1234
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    properties:
+      hibernate:
+        format_sql: true
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+
+# ==========================================
+# SMS.ir Sandbox Configuration
+# ==========================================
+sms:
+  ir:
+    api-key: "sxyroI9E6KAdoAKZbT74dbegiJffEDeNUELzyGS424sqIWjt"
+    template-id: 100000
+
+==========================================
+FILE: D:\tsv\b2bb2c\Backend\backend\src\test\kotlin\com\marketplace\backend\BackendApplicationTests.kt
+==========================================
+package com.marketplace.backend
+
+import org.junit.jupiter.api.Test
+import org.springframework.boot.test.context.SpringBootTest
+
+@SpringBootTest
+class BackendApplicationTests {
+
+	@Test
+	fun contextLoads() {
+	}
+
+}
+
+
+==========================================
+FILE: D:\tsv\b2bb2c\Backend\backend\build.gradle.kts
+==========================================
+plugins {
+	kotlin("jvm") version "2.3.21"
+	kotlin("plugin.spring") version "2.3.21"
+	id("org.springframework.boot") version "4.1.2"
+	id("io.spring.dependency-management") version "1.1.7"
+	kotlin("plugin.jpa") version "2.3.21"
+}
+
+group = "com.marketplace"
+version = "0.0.1-SNAPSHOT"
+
+java {
+	toolchain {
+		languageVersion = JavaLanguageVersion.of(21)
+	}
+}
+
+repositories {
+	mavenCentral()
+}
+
+dependencies {
+	implementation("org.springframework.boot:spring-boot-starter-data-jpa")
+	implementation("org.springframework.boot:spring-boot-starter-security")
+	implementation("org.springframework.boot:spring-boot-starter-validation")
+	implementation("org.springframework.boot:spring-boot-starter-webmvc")
+	implementation("org.jetbrains.kotlin:kotlin-reflect")
+	implementation("tools.jackson.module:jackson-module-kotlin")
+
+	// Swagger UI / OpenAPI 3 (For Spring Boot 4.1.x)
+	implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:3.1.1")
+
+	// JWT Token Libraries (For Auth & Role Management)
+	implementation("io.jsonwebtoken:jjwt-api:0.12.6")
+	runtimeOnly("io.jsonwebtoken:jjwt-impl:0.12.6")
+	runtimeOnly("io.jsonwebtoken:jjwt-jackson:0.12.6")
+
+	// PostgreSQL Driver
+	runtimeOnly("org.postgresql:postgresql")
+
+	testImplementation("org.springframework.boot:spring-boot-starter-data-jpa-test")
+	testImplementation("org.springframework.boot:spring-boot-starter-security-test")
+	testImplementation("org.springframework.boot:spring-boot-starter-validation-test")
+	testImplementation("org.springframework.boot:spring-boot-starter-webmvc-test")
+	testImplementation("org.jetbrains.kotlin:kotlin-test-junit5")
+	testRuntimeOnly("org.junit.platform:junit-platform-launcher")
+}
+
+kotlin {
+	compilerOptions {
+		freeCompilerArgs.addAll("-Xjsr305=strict", "-Xannotation-default-target=param-property")
+	}
+}
+
+allOpen {
+	annotation("jakarta.persistence.Entity")
+	annotation("jakarta.persistence.MappedSuperclass")
+	annotation("jakarta.persistence.Embeddable")
+}
+
+tasks.withType<Test> {
+	useJUnitPlatform()
+}
+
+==========================================
+FILE: D:\tsv\b2bb2c\Backend\backend\settings.gradle.kts
+==========================================
+rootProject.name = "backend"
+
+

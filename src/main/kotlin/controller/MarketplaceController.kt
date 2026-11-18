@@ -55,6 +55,12 @@ data class ProductDto(
     val minOrderQuantity: Int = 1,
     val warehouseOrigin: WarehouseOrigin = WarehouseOrigin.IRAN,
     val deliveryTimeRange: String = Product.resolveDeliveryLabel(WarehouseOrigin.IRAN),
+    val iranDeliveryTimeRange: String = Product.resolveDeliveryLabel(WarehouseOrigin.IRAN),
+    val chinaDeliveryTimeRange: String = Product.resolveDeliveryLabel(WarehouseOrigin.CHINA),
+    val iranStockQuantity: Int = 10,
+    val chinaStockQuantity: Int = 0,
+    val hasIranWarehouse: Boolean = true,
+    val hasChinaWarehouse: Boolean = false,
     val priceTiers: List<PriceTierDto> = emptyList(),
     val stockQuantity: Int,
     val imageUrl: String?,
@@ -90,6 +96,8 @@ data class CreateProductRequest(
     val saleType: SaleType = SaleType.SINGLE,
     val minOrderQuantity: Int = 1,
     val warehouseOrigin: WarehouseOrigin = WarehouseOrigin.IRAN,
+    val iranStockQuantity: Int? = null,
+    val chinaStockQuantity: Int? = null,
     val priceTiers: List<PriceTierDto> = emptyList(),
     val stockQuantity: Int = 10,
     val imageUrl: String? = null,
@@ -100,6 +108,8 @@ data class CartItemDto(
     val id: Long,
     val product: ProductDto,
     val quantity: Int,
+    val selectedWarehouse: WarehouseOrigin = WarehouseOrigin.IRAN,
+    val deliveryTimeRange: String = Product.resolveDeliveryLabel(WarehouseOrigin.IRAN),
     val appliedUnitPrice: BigDecimal,
     val lineTotal: BigDecimal
 )
@@ -109,7 +119,12 @@ data class CartSummaryDto(
     val totalPrice: BigDecimal
 )
 
-data class AddToCartRequest(val productId: Long, val quantity: Int = 1)
+data class AddToCartRequest(
+    val productId: Long,
+    val quantity: Int = 1,
+    val selectedWarehouse: WarehouseOrigin? = null
+)
+
 data class CheckoutRequest(val addressId: Long)
 
 data class OrderItemDto(
@@ -131,9 +146,6 @@ data class OrderDto(
     val items: List<OrderItemDto>
 )
 
-/**
- * Builds the 2-level category tree in O(N) memory from a single query instead of N+1 queries.
- */
 internal fun CategoryRepository.buildCategoryTree(): List<CategoryDto> {
     val all = findAll()
     val childrenByParentId = all.filter { it.parent != null }.groupBy { it.parent!!.id }
@@ -281,12 +293,16 @@ class CategoryAndSearchController(
                         p.category.name.contains(q, ignoreCase = true) ||
                         (p.description?.contains(q, ignoreCase = true) == true)
                 val matchesCat = categoryId == null || p.category.id == categoryId || p.category.parent?.id == categoryId
-                val effectivePrice = p.effectiveBasePrice()
+                val effectivePrice = p.effectivePriceForWarehouse()
                 val matchesMin = minPrice == null || effectivePrice >= minPrice
                 val matchesMax = maxPrice == null || effectivePrice <= maxPrice
                 val matchesHot = onlyHotDeals != true || p.isHotDeal
                 val matchesSaleType = saleType == null || p.saleType == saleType
-                val matchesOrigin = warehouseOrigin == null || p.warehouseOrigin == warehouseOrigin
+                val matchesOrigin = when (warehouseOrigin) {
+                    null -> true
+                    WarehouseOrigin.IRAN -> p.iranStockQuantity > 0 || p.warehouseOrigin == WarehouseOrigin.IRAN
+                    WarehouseOrigin.CHINA -> p.chinaStockQuantity > 0 || p.warehouseOrigin == WarehouseOrigin.CHINA
+                }
 
                 matchesQuery && matchesCat && matchesMin && matchesMax && matchesHot && matchesSaleType && matchesOrigin
             }
@@ -296,7 +312,7 @@ class CategoryAndSearchController(
 
 @RestController
 @RequestMapping("/api/v1")
-@Tag(name = "5. Retail & Supplier Booths & Products", description = "Retail & MOQ Supplier Booths, Single (Iran/China) & MOQ Products CRUD")
+@Tag(name = "5. Retail & Supplier Booths & Products", description = "Retail & MOQ Supplier Booths, Dual-Warehouse Single (Iran/China) & MOQ Products CRUD")
 class BoothAndProductController(
     private val boothRepository: BoothRepository,
     private val productRepository: ProductRepository,
@@ -355,9 +371,32 @@ class BoothAndProductController(
     private fun applyProductAttributes(product: Product, req: CreateProductRequest) {
         val effectiveMinQty = if (req.saleType == SaleType.MOQ) req.minOrderQuantity.coerceAtLeast(2) else 1
         val validDiscount = req.discountPrice?.takeIf { it > BigDecimal.ZERO && it < req.price }
-        val validChinaPrice = if (req.warehouseOrigin == WarehouseOrigin.CHINA) {
-            req.chinaPrice?.takeIf { it > BigDecimal.ZERO && it < req.price } ?: validDiscount
-        } else null
+        val validChinaPrice = req.chinaPrice?.takeIf { it > BigDecimal.ZERO }
+            ?: if (req.warehouseOrigin == WarehouseOrigin.CHINA) validDiscount else null
+
+        val resolvedIranStock: Int
+        val resolvedChinaStock: Int
+
+        if (req.iranStockQuantity != null || req.chinaStockQuantity != null) {
+            resolvedIranStock = (req.iranStockQuantity ?: 0).coerceAtLeast(0)
+            resolvedChinaStock = (req.chinaStockQuantity ?: 0).coerceAtLeast(0)
+        } else {
+            val baseStock = req.stockQuantity.coerceAtLeast(effectiveMinQty)
+            if (req.warehouseOrigin == WarehouseOrigin.CHINA) {
+                resolvedIranStock = 0
+                resolvedChinaStock = baseStock
+            } else {
+                resolvedIranStock = baseStock
+                resolvedChinaStock = if (validChinaPrice != null) baseStock else 0
+            }
+        }
+
+        val primaryOrigin = when {
+            req.warehouseOrigin == WarehouseOrigin.CHINA && resolvedChinaStock > 0 -> WarehouseOrigin.CHINA
+            resolvedIranStock > 0 -> WarehouseOrigin.IRAN
+            resolvedChinaStock > 0 -> WarehouseOrigin.CHINA
+            else -> req.warehouseOrigin
+        }
 
         product.title = req.title.trim()
         product.description = req.description?.trim()
@@ -366,9 +405,15 @@ class BoothAndProductController(
         product.chinaPrice = validChinaPrice
         product.saleType = req.saleType
         product.minOrderQuantity = effectiveMinQty
-        product.warehouseOrigin = req.warehouseOrigin
-        product.deliveryTimeRange = Product.resolveDeliveryLabel(req.warehouseOrigin)
-        product.stockQuantity = req.stockQuantity.coerceAtLeast(effectiveMinQty)
+        product.warehouseOrigin = primaryOrigin
+        product.deliveryTimeRange = Product.resolveDeliveryLabel(primaryOrigin)
+        product.iranStockQuantity = resolvedIranStock
+        product.chinaStockQuantity = resolvedChinaStock
+        product.syncTotalStock()
+        if (product.stockQuantity < effectiveMinQty) {
+            product.iranStockQuantity = effectiveMinQty
+            product.syncTotalStock()
+        }
         if (!req.imageUrl.isNullOrBlank()) {
             product.imageUrl = req.imageUrl.trim()
         }
@@ -378,7 +423,7 @@ class BoothAndProductController(
 
     @PostMapping("/booths/{boothId}/products")
     @Transactional
-    @Operation(summary = "Add a SINGLE (Iran Ready / China 50-90 Days) or MOQ Wholesale Product to a Booth")
+    @Operation(summary = "Add a SINGLE (Dual Warehouse Iran/China) or MOQ Wholesale Product to a Booth")
     fun addProductToBooth(
         @PathVariable boothId: Long,
         @RequestBody req: CreateProductRequest
@@ -395,7 +440,9 @@ class BoothAndProductController(
                 ?: throw ResponseStatusException(HttpStatus.NOT_FOUND, "دسته‌بندی یافت نشد")
         }
 
-        if (req.saleType == SaleType.MOQ && booth.type == BoothType.RETAIL) {
+        if ((req.saleType == SaleType.MOQ || req.chinaPrice != null || (req.chinaStockQuantity ?: 0) > 0) &&
+            booth.type == BoothType.RETAIL
+        ) {
             booth.type = BoothType.SUPPLIER
             boothRepository.save(booth)
         }
@@ -455,7 +502,7 @@ class BoothAndProductController(
 
 @RestController
 @RequestMapping("/api/v1/users/{userId}")
-@Tag(name = "6. Cart, Wishlist & Checkout", description = "Shopping cart (with MOQ & China/Iran pricing), wishlist, and order checkout")
+@Tag(name = "6. Cart, Wishlist & Checkout", description = "Shopping cart (with MOQ & Iran/China Warehouse selection), wishlist, and order checkout")
 class CartAndOrderController(
     private val userRepository: UserRepository,
     private val productRepository: ProductRepository,
@@ -469,11 +516,13 @@ class CartAndOrderController(
     @GetMapping("/cart")
     fun getCart(@PathVariable userId: Long): CartSummaryDto {
         val items = cartItemRepository.findByUserId(userId).map { item ->
-            val unitPrice = item.product.resolveUnitPrice(item.quantity)
+            val unitPrice = item.product.resolveUnitPrice(item.quantity, item.selectedWarehouse)
             CartItemDto(
                 id = item.id,
                 product = item.product.toDto(),
                 quantity = item.quantity,
+                selectedWarehouse = item.selectedWarehouse,
+                deliveryTimeRange = Product.resolveDeliveryLabel(item.selectedWarehouse),
                 appliedUnitPrice = unitPrice,
                 lineTotal = unitPrice.multiply(BigDecimal(item.quantity))
             )
@@ -497,31 +546,43 @@ class CartAndOrderController(
 
         val minRequired = if (product.saleType == SaleType.MOQ) product.minOrderQuantity.coerceAtLeast(2) else 1
         val existing = cartItemRepository.findByUserIdAndProductId(userId, req.productId)
+        val chosenWarehouse = req.selectedWarehouse ?: existing?.selectedWarehouse ?: product.defaultAvailableWarehouse()
+        val warehouseStock = product.availableStockFor(chosenWarehouse).takeIf { it > 0 } ?: product.stockQuantity
 
         if (existing != null) {
-            val newQty = existing.quantity + req.quantity
+            val isSwitchingWarehouse = req.selectedWarehouse != null && req.selectedWarehouse != existing.selectedWarehouse
+            val newQty = if (isSwitchingWarehouse && req.quantity > 0) req.quantity else existing.quantity + req.quantity
+
             if (newQty <= 0 || (req.quantity < 0 && newQty < minRequired)) {
                 cartItemRepository.delete(existing)
             } else {
                 val enforcedQty = newQty.coerceAtLeast(minRequired)
-                if (enforcedQty > product.stockQuantity) {
+                if (enforcedQty > warehouseStock) {
                     throw ResponseStatusException(
                         HttpStatus.BAD_REQUEST,
-                        "تعداد درخواستی بیشتر از موجودی انبار (${product.stockQuantity} عدد) است"
+                        "تعداد درخواستی بیشتر از موجودی انبار انتخابی ($warehouseStock عدد) است"
                     )
                 }
+                existing.selectedWarehouse = chosenWarehouse
                 existing.quantity = enforcedQty
                 cartItemRepository.save(existing)
             }
         } else if (req.quantity > 0) {
             val initialQty = req.quantity.coerceAtLeast(minRequired)
-            if (product.stockQuantity < initialQty) {
+            if (warehouseStock < initialQty) {
                 throw ResponseStatusException(
                     HttpStatus.BAD_REQUEST,
-                    "موجودی انبار برای حداقل سفارش (${minRequired} عدد) کافی نیست"
+                    "موجودی انبار انتخابی برای حداقل سفارش ($minRequired عدد) کافی نیست"
                 )
             }
-            cartItemRepository.save(CartItem(user = user, product = product, quantity = initialQty))
+            cartItemRepository.save(
+                CartItem(
+                    user = user,
+                    product = product,
+                    quantity = initialQty,
+                    selectedWarehouse = chosenWarehouse
+                )
+            )
         }
         return getCart(userId)
     }
@@ -591,18 +652,21 @@ class CartAndOrderController(
                     "حداقل تعداد سفارش عمده (MOQ) برای محصول «${item.product.title}» برابر با $minReq عدد است"
                 )
             }
-            if (item.quantity <= 0 || item.quantity > item.product.stockQuantity) {
+            val warehouseStock = item.product.availableStockFor(item.selectedWarehouse)
+                .takeIf { it > 0 } ?: item.product.stockQuantity
+
+            if (item.quantity <= 0 || item.quantity > warehouseStock) {
                 throw ResponseStatusException(
                     HttpStatus.BAD_REQUEST,
-                    "موجودی محصول «${item.product.title}» کافی نیست (موجودی: ${item.product.stockQuantity})"
+                    "موجودی محصول «${item.product.title}» در انبار انتخابی کافی نیست (موجودی: $warehouseStock)"
                 )
             }
-            item.product.stockQuantity -= item.quantity
+            item.product.deductStock(item.selectedWarehouse, item.quantity)
             productRepository.save(item.product)
         }
 
         val total = cartItems.fold(BigDecimal.ZERO) { acc, item ->
-            val unitPrice = item.product.resolveUnitPrice(item.quantity)
+            val unitPrice = item.product.resolveUnitPrice(item.quantity, item.selectedWarehouse)
             acc.add(unitPrice.multiply(BigDecimal(item.quantity)))
         }
 
@@ -611,13 +675,14 @@ class CartAndOrderController(
         )
 
         val savedItems = cartItems.map { item ->
-            val unitPrice = item.product.resolveUnitPrice(item.quantity)
+            val unitPrice = item.product.resolveUnitPrice(item.quantity, item.selectedWarehouse)
             orderItemRepository.save(
                 OrderItem(
                     order = savedOrder,
                     product = item.product,
                     quantity = item.quantity,
-                    unitPrice = unitPrice
+                    unitPrice = unitPrice,
+                    selectedWarehouse = item.selectedWarehouse
                 )
             )
         }
@@ -654,6 +719,12 @@ internal fun Product.toDto(): ProductDto = ProductDto(
     minOrderQuantity = minOrderQuantity,
     warehouseOrigin = warehouseOrigin,
     deliveryTimeRange = deliveryTimeRange,
+    iranDeliveryTimeRange = Product.resolveDeliveryLabel(WarehouseOrigin.IRAN),
+    chinaDeliveryTimeRange = Product.resolveDeliveryLabel(WarehouseOrigin.CHINA),
+    iranStockQuantity = iranStockQuantity,
+    chinaStockQuantity = chinaStockQuantity,
+    hasIranWarehouse = iranStockQuantity > 0,
+    hasChinaWarehouse = chinaStockQuantity > 0 || chinaPrice != null,
     priceTiers = priceTiers.sortedBy { it.minQuantity }.map { PriceTierDto(it.minQuantity, it.unitPrice) },
     stockQuantity = stockQuantity,
     imageUrl = imageUrl,
@@ -674,8 +745,8 @@ internal fun Order.toDto(items: List<OrderItem>) = OrderDto(
             quantity = it.quantity,
             unitPrice = it.unitPrice,
             saleType = it.product.saleType,
-            warehouseOrigin = it.product.warehouseOrigin,
-            deliveryTimeRange = it.product.deliveryTimeRange
+            warehouseOrigin = it.selectedWarehouse,
+            deliveryTimeRange = Product.resolveDeliveryLabel(it.selectedWarehouse)
         )
     }
 )

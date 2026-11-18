@@ -101,8 +101,8 @@ class SecurityAndSwaggerConfig(
         return OpenAPI()
             .info(
                 Info()
-                    .title("Hermes Marketplace API - Sprint 1")
-                    .version("1.0.0")
+                    .title("Hermes Marketplace API - Sprint 1 & 2")
+                    .version("2.0.0")
                     .description("Backend REST APIs for Hermes (هرمس) B2B/B2C Native Android Marketplace")
             )
             .addSecurityItem(SecurityRequirement().addList(schemeName))
