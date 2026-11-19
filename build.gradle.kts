@@ -7,7 +7,7 @@ plugins {
 }
 
 group = "com.marketplace"
-version = "0.0.1-SNAPSHOT"
+version = "2.0.0"
 
 java {
 	toolchain {
@@ -24,19 +24,21 @@ dependencies {
 	implementation("org.springframework.boot:spring-boot-starter-security")
 	implementation("org.springframework.boot:spring-boot-starter-validation")
 	implementation("org.springframework.boot:spring-boot-starter-webmvc")
+	implementation("org.springframework.boot:spring-boot-starter-flyway")
 	implementation("org.jetbrains.kotlin:kotlin-reflect")
 	implementation("tools.jackson.module:jackson-module-kotlin")
 
-	// Swagger UI / OpenAPI 3 (For Spring Boot 4.1.x)
+	// Swagger UI / OpenAPI 3 (Spring Boot 4.1.x)
 	implementation("org.springdoc:springdoc-openapi-starter-webmvc-ui:3.1.1")
 
-	// JWT Token Libraries (For Auth & Role Management)
+	// JWT
 	implementation("io.jsonwebtoken:jjwt-api:0.12.6")
 	runtimeOnly("io.jsonwebtoken:jjwt-impl:0.12.6")
 	runtimeOnly("io.jsonwebtoken:jjwt-jackson:0.12.6")
 
-	// PostgreSQL Driver
+	// PostgreSQL & Flyway Postgres Dialect
 	runtimeOnly("org.postgresql:postgresql")
+	runtimeOnly("org.flywaydb:flyway-database-postgresql")
 
 	testImplementation("org.springframework.boot:spring-boot-starter-data-jpa-test")
 	testImplementation("org.springframework.boot:spring-boot-starter-security-test")

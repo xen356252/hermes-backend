@@ -1,32 +1,15 @@
-package com.marketplace.backend.model
+package com.marketplace.backend.domain
 
 import jakarta.persistence.*
+import org.hibernate.annotations.BatchSize
 import java.math.BigDecimal
 import java.time.LocalDateTime
 
-enum class UserRole {
-    BUYER, SELLER, ADMIN
-}
-
-enum class BoothType {
-    RETAIL,
-    SUPPLIER,
-    PRODUCTION
-}
-
-enum class SaleType {
-    SINGLE,
-    MOQ
-}
-
-enum class WarehouseOrigin {
-    IRAN,
-    CHINA
-}
-
-enum class OrderStatus {
-    PENDING, PAID, SHIPPED, DELIVERED, CANCELLED
-}
+enum class UserRole { BUYER, SELLER, ADMIN }
+enum class BoothType { RETAIL, SUPPLIER, PRODUCTION }
+enum class SaleType { SINGLE, MOQ }
+enum class WarehouseOrigin { IRAN, CHINA }
+enum class OrderStatus { PENDING, PAID, SHIPPED, DELIVERED, CANCELLED }
 
 @Entity
 @Table(name = "users")
@@ -67,6 +50,29 @@ class User(
     var bio: String? = null,
 
     val createdAt: LocalDateTime = LocalDateTime.now()
+)
+
+@Entity
+@Table(name = "otp_verifications")
+class OtpVerification(
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    val id: Long = 0,
+
+    @Column(nullable = false, unique = true, length = 15)
+    val phone: String,
+
+    @Column(name = "hashed_code", nullable = false, length = 120)
+    var hashedCode: String,
+
+    @Column(name = "expires_at", nullable = false)
+    var expiresAt: LocalDateTime,
+
+    @Column(name = "failed_attempts", nullable = false)
+    var failedAttempts: Int = 0,
+
+    @Column(name = "created_at", nullable = false)
+    var createdAt: LocalDateTime = LocalDateTime.now()
 )
 
 @Entity
@@ -165,15 +171,12 @@ class Product(
     @Column(columnDefinition = "TEXT")
     var description: String? = null,
 
-    // Base / Iran Warehouse Price
     @Column(nullable = false, precision = 18, scale = 0)
     var price: BigDecimal,
 
-    // Optional Discounted Price for Iran Warehouse
     @Column(precision = 18, scale = 0)
     var discountPrice: BigDecimal? = null,
 
-    // Optional Lower Price for China Warehouse (50-90 working days)
     @Column(precision = 18, scale = 0)
     var chinaPrice: BigDecimal? = null,
 
@@ -191,31 +194,38 @@ class Product(
     @Column(nullable = false, length = 120)
     var deliveryTimeRange: String = resolveDeliveryLabel(WarehouseOrigin.IRAN),
 
-    // Separate inventory for Iran Warehouse vs. China Warehouse (ChayaMarket model)
     @Column(nullable = false)
-    var iranStockQuantity: Int = 10,
+    var iranStockQuantity: Int = 0,
 
     @Column(nullable = false)
     var chinaStockQuantity: Int = 0,
 
-    // Total combined stock (kept synchronized for backward compatibility)
     @Column(nullable = false)
-    var stockQuantity: Int = 10,
+    var stockQuantity: Int = 0,
 
     @Column(columnDefinition = "TEXT")
     var imageUrl: String? = null,
 
     var isHotDeal: Boolean = false,
 
+    @Column(nullable = false)
+    var isActive: Boolean = true,
+
     var rating: Double = 5.0,
 
-    @OneToMany(mappedBy = "product", cascade = [CascadeType.ALL], orphanRemoval = true, fetch = FetchType.EAGER)
+    @Version
+    @Column(nullable = false)
+    var version: Long = 0,
+
+    @OneToMany(mappedBy = "product", cascade = [CascadeType.ALL], orphanRemoval = true, fetch = FetchType.LAZY)
+    @BatchSize(size = 50)
     val priceTiers: MutableList<PriceTier> = mutableListOf(),
 
     val createdAt: LocalDateTime = LocalDateTime.now()
 ) {
     fun syncTotalStock() {
-        stockQuantity = (iranStockQuantity.coerceAtLeast(0) + chinaStockQuantity.coerceAtLeast(0))
+        require(iranStockQuantity >= 0 && chinaStockQuantity >= 0) { "Stock cannot be negative" }
+        stockQuantity = iranStockQuantity + chinaStockQuantity
     }
 
     fun availableStockFor(warehouse: WarehouseOrigin): Int = when (warehouse) {
@@ -224,9 +234,27 @@ class Product(
     }
 
     fun deductStock(warehouse: WarehouseOrigin, quantity: Int) {
+        if (quantity <= 0) {
+            throw BadRequestException("تعداد سفارش باید بزرگتر از صفر باشد")
+        }
+        val available = availableStockFor(warehouse)
+        if (quantity > available) {
+            throw BadRequestException(
+                "موجودی محصول «$title» در ${warehouseLabel(warehouse)} کافی نیست (موجودی: $available)"
+            )
+        }
         when (warehouse) {
-            WarehouseOrigin.IRAN -> iranStockQuantity = (iranStockQuantity - quantity).coerceAtLeast(0)
-            WarehouseOrigin.CHINA -> chinaStockQuantity = (chinaStockQuantity - quantity).coerceAtLeast(0)
+            WarehouseOrigin.IRAN -> iranStockQuantity -= quantity
+            WarehouseOrigin.CHINA -> chinaStockQuantity -= quantity
+        }
+        syncTotalStock()
+    }
+
+    fun restoreStock(warehouse: WarehouseOrigin, quantity: Int) {
+        if (quantity <= 0) return
+        when (warehouse) {
+            WarehouseOrigin.IRAN -> iranStockQuantity += quantity
+            WarehouseOrigin.CHINA -> chinaStockQuantity += quantity
         }
         syncTotalStock()
     }
@@ -269,6 +297,11 @@ class Product(
     }
 
     companion object {
+        fun warehouseLabel(origin: WarehouseOrigin): String = when (origin) {
+            WarehouseOrigin.IRAN -> "انبار ایران"
+            WarehouseOrigin.CHINA -> "انبار چین"
+        }
+
         fun resolveDeliveryLabel(origin: WarehouseOrigin): String = when (origin) {
             WarehouseOrigin.IRAN -> "آماده ارسال از انبار ایران (۱ تا ۳ روز کاری)"
             WarehouseOrigin.CHINA -> "ارسال مستقیم از انبار چین به ایران (۵۰ تا ۹۰ روز کاری - قیمت اقتصادی)"
@@ -276,8 +309,14 @@ class Product(
     }
 }
 
+internal fun Product.preloadTiers(): Product = apply { priceTiers.size }
+internal fun List<Product>.preloadTiers(): List<Product> = apply { forEach { it.priceTiers.size } }
+
 @Entity
-@Table(name = "product_price_tiers")
+@Table(
+    name = "product_price_tiers",
+    uniqueConstraints = [UniqueConstraint(columnNames = ["product_id", "min_quantity"])]
+)
 class PriceTier(
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -301,7 +340,7 @@ class Banner(
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     val id: Long = 0,
 
-    @Column(nullable = false, length = 300)
+    @Column(nullable = false, columnDefinition = "TEXT")
     var title: String,
 
     @Column(nullable = false, columnDefinition = "TEXT")
@@ -315,7 +354,12 @@ class Banner(
 @Entity
 @Table(
     name = "cart_items",
-    uniqueConstraints = [UniqueConstraint(columnNames = ["user_id", "product_id"])]
+    uniqueConstraints = [
+        UniqueConstraint(
+            name = "uq_cart_user_product_warehouse",
+            columnNames = ["user_id", "product_id", "selected_warehouse"]
+        )
+    ]
 )
 class CartItem(
     @Id
@@ -379,7 +423,7 @@ class Order(
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
-    var status: OrderStatus = OrderStatus.PAID,
+    var status: OrderStatus = OrderStatus.PENDING,
 
     val createdAt: LocalDateTime = LocalDateTime.now()
 )

@@ -1,33 +1,81 @@
 server:
-  port: 8080
-  address: 0.0.0.0
+  port: ${SERVER_PORT:8080}
+  address: ${SERVER_ADDRESS:0.0.0.0}
+  shutdown: graceful
 
 spring:
   application:
-    name: backend
+    name: hermes-backend
+  lifecycle:
+    timeout-per-shutdown-phase: 30s
+
+  servlet:
+    multipart:
+      enabled: true
+      max-file-size: 5MB
+      max-request-size: 5MB
 
   datasource:
-    url: jdbc:postgresql://localhost:5432/marketplace_db
-    username: postgres
-    password: 1234
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/marketplace_db}
+    username: ${DB_USERNAME:postgres}
+    password: ${DB_PASSWORD:1234}
     driver-class-name: org.postgresql.Driver
+    hikari:
+      pool-name: HermesHikariPool
+      maximum-pool-size: ${DB_POOL_MAX:20}
+      minimum-idle: ${DB_POOL_MIN_IDLE:5}
+      connection-timeout: 10000
+      idle-timeout: 300000
+      max-lifetime: 1800000
+
+  flyway:
+    enabled: true
+    baseline-on-migrate: true
+    baseline-version: 0
+    locations: classpath:db/migration
 
   jpa:
+    open-in-view: false
     hibernate:
-      ddl-auto: update
-    show-sql: true
+      ddl-auto: ${JPA_DDL_AUTO:validate}
+    show-sql: ${JPA_SHOW_SQL:false}
     properties:
       hibernate:
         format_sql: true
+        default_batch_fetch_size: 50
 
 springdoc:
   swagger-ui:
     path: /swagger-ui.html
 
-# ==========================================
-# SMS.ir Sandbox Configuration
-# ==========================================
-sms:
-  ir:
-    api-key: "sxyroI9E6KAdoAKZbT74dbegiJffEDeNUELzyGS424sqIWjt"
-    template-id: 100000
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} [%thread] %-5level [%X{requestId:-SYSTEM}] %logger{36} - %msg%n"
+
+app:
+  jwt:
+    secret: ${JWT_SECRET:HermesDevOnlySuperSecretJwtSigningKeyChangeInProduction2026!}
+    expiration-millis: ${JWT_EXPIRATION_MILLIS:604800000}
+  auth:
+    admin-phone: ${APP_ADMIN_PHONE:09120000000}
+    admin-bootstrap-password: ${APP_ADMIN_BOOTSTRAP_PASSWORD:1234}
+    otp-ttl-seconds: ${APP_OTP_TTL_SECONDS:180}
+    otp-max-attempts: ${APP_OTP_MAX_ATTEMPTS:5}
+    expose-sandbox-otp: ${APP_EXPOSE_SANDBOX_OTP:false}
+    require-otp-on-register: ${APP_REQUIRE_OTP_ON_REGISTER:false}
+  cors:
+    allowed-origins: ${APP_CORS_ALLOWED_ORIGINS:http://localhost:3000,http://localhost:8080}
+  rate-limit:
+    default-requests-per-minute: ${APP_RATE_LIMIT_DEFAULT:120}
+    auth-requests-per-minute: ${APP_RATE_LIMIT_AUTH:20}
+  sms:
+    base-url: ${SMS_IR_BASE_URL:https://api.sms.ir/v1/send/verify}
+    api-key: ${SMS_IR_API_KEY:}
+    template-id: ${SMS_IR_TEMPLATE_ID:100000}
+    max-retries: 3
+  media:
+    upload-dir: ${APP_MEDIA_UPLOAD_DIR:uploads}
+    max-file-size-bytes: ${APP_MEDIA_MAX_BYTES:5242880}
+  realtime-snapshot:
+    enabled: ${APP_REALTIME_SNAPSHOT_ENABLED:false}
+    file-path: ${APP_REALTIME_SNAPSHOT_PATH:realtime_database.txt}

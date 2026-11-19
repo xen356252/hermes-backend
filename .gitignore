@@ -38,3 +38,13 @@ out/
 
 ### Kotlin ###
 .kotlin
+
+backend_code.txt
+realtime_database.txt
+
+src/main/resources/application-local.yaml
+application-local.yaml
+
+uploads/
+file_structure.txt
+all_backend_code.txt
